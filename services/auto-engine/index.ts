@@ -126,7 +126,7 @@ async function scanPortfolio(account:any,positions:any[]){
 }
 
 async function testnetRequest(path:string,payload:any){
- const hub=String(env.EXCHANGE_HUB_URL||"").replace(/\/$/,""),token=String(env.CONNECTOR_ADMIN_TOKEN||"");
+ const hub=String(env.EXCHANGE_HUB_URL||"https://jamalquant-exchange-hub-production.up.railway.app").replace(/\/$/,""),token=String(env.CONNECTOR_ADMIN_TOKEN||"");
  if(!hub||token.length<32)throw new Error("Connecteur Testnet non configuré côté moteur.");
  const response=await fetch(hub+path,{method:"POST",headers:{"content-type":"application/json","authorization":"Bearer "+token},body:JSON.stringify(payload),signal:AbortSignal.timeout(20000)});
  const data:any=await response.json().catch(()=>({}));
@@ -287,7 +287,11 @@ async function handle(req:Request){
   const positions=await db`SELECT * FROM testnet_auto_positions WHERE telegram_user_id=${userId} ORDER BY updated_at DESC`;
   const orders=await db`SELECT symbol,side,quantity,filled,average,cost,status,reason,created_at FROM testnet_auto_orders WHERE telegram_user_id=${userId} ORDER BY created_at DESC LIMIT 30`;
   let account:any=null;try{account=await testnetRequest("/private/account",{exchange:"binance"});}catch{}
-  return Response.json({ok:true,mode:"BINANCE_SPOT_TESTNET",status:rows[0]?.status||"STOPPED",environment:account?.environment||"unavailable",assets:account?.assets||[],positions,orders,lastScanAt:rows[0]?.last_scan_at||null,maxOrderUsdt:25});
+  const assets=account?.assets||[],usdt=Number(assets.find((x:any)=>x.asset==="USDT")?.total||0);
+  const mappedPositions=positions.map((p:any)=>{const market=agentState.get(p.symbol)||{};return {symbol:p.symbol,marketType:"crypto",quantity:Number(p.quantity),entry:Number(p.entry_price),price:Number(market.price||p.entry_price),stop:Number(p.stop_price),target:Number(p.target_price)};});
+  const invested=mappedPositions.reduce((sum:number,p:any)=>sum+p.quantity*p.price,0);
+  const equity=usdt+invested,capital=Number(rows[0]?.starting_usdt||usdt);
+  return Response.json({ok:true,mode:"BINANCE_SPOT_TESTNET",status:rows[0]?.status||"STOPPED",environment:account?.environment||"unavailable",accountConnected:account?.accountConnected===true,assets,capital,cash:usdt,available:usdt,invested,equity,pnl:equity-capital,openPositions:mappedPositions.length,positions:mappedPositions,trades:orders,universe:cryptoMarkets.length,markets:cryptoMarkets.map(x=>x.symbol),agents:cryptoMarkets.map(u=>agentState.get(u.symbol)||{symbol:u.symbol,type:"crypto",state:"INITIALISATION"}),equityHistory:[],lastScanAt:rows[0]?.last_scan_at?new Date(rows[0].last_scan_at).getTime():null,maxOrderUsdt:25,maxOpenPositions:2});
  }
  if(url.pathname==="/testnet/stop"){
   await db`UPDATE testnet_auto_accounts SET status='STOPPED',updated_at=NOW() WHERE telegram_user_id=${userId}`;
