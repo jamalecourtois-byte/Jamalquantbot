@@ -77,6 +77,8 @@ async function scanPortfolio(account:any,positions:any[]){
    const s=settled[j];if(s.status==="rejected"){errors++;const reason=String(s.reason);agentState.set(batch[j].symbol,{...(agentState.get(batch[j].symbol)||{}),symbol:batch[j].symbol,type:batch[j].type,state:/FERM/.test(reason)?"MARCHÉ FERMÉ":"DONNÉES INDISPONIBLES",updatedAt:Date.now()});console.warn("Market scan failed",batch[j].symbol,reason);continue;}
    const m=s.value,cs=m.candles,closes=cs.map((x:any)=>x.c),e20=ema(closes,20),e50=ema(closes,50),rv=rsi(closes),vol=atr(cs),last=cs[cs.length-1],prev=cs[cs.length-2];
    const vote=await runAgentPipeline({item:m,candles:cs,price:m.price,ema20:e20,ema50:e50,rsi:rv,atr:vol,riskBudget:Math.min(Number(account.initial_capital)*0.003,Number(account.cash)*0.01),availableCash:Number(account.cash),maxOrderNotional:Number(account.cash)*0.12,minimumOrderNotional:10,onProgress:(rows:any[])=>{const current=agentState.get(m.symbol)||{};agentState.set(m.symbol,{...current,symbol:m.symbol,type:m.type,price:m.price,ema20:e20,ema50:e50,rsi:rv,trend:e20>e50?"HAUSSIER":"BAISSIER",pipelineValid:false,agentVotes:rows.map(x=>({name:x.name,bullish:!!x.ok,verdict:x.verdict,group:x.group,detail:x.detail||""})),agentCount:19,state:"ANALYSE DES AGENTS "+rows.length+"/19",updatedAt:Date.now()});}});const signal=vote.valid;
+   gateSummary.push({symbol:m.symbol,valid:signal,technical:vote.gate?.technicalVotes,news:vote.gate?.newsSupportVotes,backtests:vote.gate?.simulationPasses,risk:vote.gate?.riskPassed});
+   if(signal)signals++;else if(Number(vote.gate?.riskPassed||0)<3)riskRejected++;else consensusRejected++;
    agentState.set(m.symbol,{symbol:m.symbol,type:m.type,price:m.price,ema20:e20,ema50:e50,rsi:rv,trend:e20>e50?"HAUSSIER":"BAISSIER",signal:Boolean(m.marketOpen)&&signal,score:vote.bullishVotes,agentCount:vote.totalAgents,agentVotes:vote.agentVotes,pipelineValid:vote.valid,consensus:vote.consensus,newsBias:vote.newsBias,simulation:vote.simulation,risk:vote.risk,state:!m.marketOpen?"MARCHÉ FERMÉ · ANALYSE HISTORIQUE":held.has(m.symbol)?"EN POSITION":signal?"CONSENSUS ACHAT":"ANALYSÉ · ATTENTE",changePct:(m.price/cs[0].c-1)*100,spark:cs.slice(-40).map((x:any)=>x.c),chartCandles:cs.slice(-60).map((x:any)=>({t:x.t,o:x.o,h:x.h,l:x.l,c:x.c})),dataAgeMinutes:Math.round((Number(m.dataAgeMs)||0)/60000),updatedAt:Date.now()});
    results.push(m);
    // Closed markets remain analyzable from their last valid candles, but never generate paper orders or stale-price exits.
@@ -139,7 +141,7 @@ async function scanTestnetAccount(account:any){
  if(accountData.environment!=="binance-spot-testnet"||accountData.accountConnected!==true)throw new Error("Compte Binance Spot Testnet non confirmé.");
  const usdt=Number((accountData.assets||[]).find((x:any)=>x.asset==="USDT")?.total||0),orderBudget=Math.min(25,usdt*0.10);
  await warmNews(cryptoMarkets);
- let scanned=0,errors=0,orders=0;
+ let scanned=0,errors=0,orders=0,signals=0,consensusRejected=0,riskRejected=0,submitted=0,pendingOrders=0,cooldownSkipped=0,positionLimitSkipped=0,budgetSkipped=0;const gateSummary:any[]=[];
  for(const item of cryptoMarkets){
   try{
    const m=await getMarket(item),cs=m.candles,closes=cs.map((x:any)=>x.c),e20=ema(closes,20),e50=ema(closes,50),rv=rsi(closes),vol=atr(cs),last=cs[cs.length-1],prev=cs[cs.length-2];
@@ -150,7 +152,7 @@ async function scanTestnetAccount(account:any){
    const pendingRows=await db`SELECT * FROM testnet_auto_orders WHERE telegram_user_id=${uid} AND symbol=${m.symbol.replace(/USDT$/,"/USDT")} AND status NOT IN ('closed','filled','canceled','rejected') ORDER BY created_at DESC LIMIT 1`;
    if(pendingRows.length){
     const po=pendingRows[0],side=String(po.side).toLowerCase()==="buy"?"buy":"sell";
-    const refreshed=await testnetOrder(uid,m.symbol,side,Number(po.requested_amount),String(po.reason),Number(po.candle_time));
+    const refreshed=await testnetOrder(uid,m.symbol,side,Number(po.requested_amount),String(po.reason),Number(po.candle_time));submitted++;
     const filled=Number(refreshed.filled||0),average=Number(refreshed.average||0),status=String(refreshed.status||"").toLowerCase();
     if(filled>0&&average>0&&["closed","filled"].includes(status)){
      if(side==="buy"){
@@ -164,7 +166,7 @@ async function scanTestnetAccount(account:any){
       orders++;
       void telegram("🔴 JAMALQUANT · VENTE TESTNET\n"+m.symbol+"\nQuantité exécutée : "+fmt(filled)+"\nPrix moyen : "+fmt(average)+"\nStatut : "+status,uid).catch(()=>{});
      }
-    }
+    }else{pendingOrders++;}
     continue;
    }
    const posRows=await db`SELECT * FROM testnet_auto_positions WHERE telegram_user_id=${uid} AND symbol=${m.symbol}`;
@@ -172,27 +174,27 @@ async function scanTestnetAccount(account:any){
     const p=posRows[0],high=Math.max(Number(p.highest_price),m.price),exit=m.price<=Number(p.stop_price)||m.price>=Number(p.target_price)||e20<e50||rv<45;
     await db`UPDATE testnet_auto_positions SET highest_price=${high},updated_at=NOW() WHERE telegram_user_id=${uid} AND symbol=${m.symbol}`;
     if(exit){
-     const result=await testnetOrder(uid,m.symbol,"sell",Number(p.quantity),m.price<=Number(p.stop_price)?"STOP_LOSS":m.price>=Number(p.target_price)?"TAKE_PROFIT":"SIGNAL_INVALIDATED",last.t);
+     const result=await testnetOrder(uid,m.symbol,"sell",Number(p.quantity),m.price<=Number(p.stop_price)?"STOP_LOSS":m.price>=Number(p.target_price)?"TAKE_PROFIT":"SIGNAL_INVALIDATED",last.t);submitted++;
      const filled=Number(result.filled||0),average=Number(result.average||m.price);
      if(filled>0&&["closed","filled"].includes(String(result.status||"").toLowerCase())){
       await db`DELETE FROM testnet_auto_positions WHERE telegram_user_id=${uid} AND symbol=${m.symbol}`;
       await db`INSERT INTO testnet_auto_cooldowns(telegram_user_id,symbol,cooldown_until) VALUES(${uid},${m.symbol},NOW()+INTERVAL '5 minutes') ON CONFLICT(telegram_user_id,symbol) DO UPDATE SET cooldown_until=EXCLUDED.cooldown_until`;
       orders++;
       void telegram("🔴 JAMALQUANT · VENTE TESTNET\n"+m.symbol+"\nQuantité exécutée : "+fmt(filled)+"\nPrix moyen : "+fmt(average)+"\nStatut : "+String(result.status),uid).catch(()=>{});
-     }
+     }else{pendingOrders++;}
     }
     continue;
    }
    if(!signal)continue;
-   const cooling=await db`SELECT 1 FROM testnet_auto_cooldowns WHERE telegram_user_id=${uid} AND symbol=${m.symbol} AND cooldown_until>NOW()`;if(cooling.length)continue;
-   const pending=await db`SELECT 1 FROM testnet_auto_orders WHERE telegram_user_id=${uid} AND symbol=${m.symbol.replace(/USDT$/,"/USDT")} AND side='BUY' AND status NOT IN ('closed','filled','canceled','rejected') LIMIT 1`;if(pending.length)continue;
+   const cooling=await db`SELECT 1 FROM testnet_auto_cooldowns WHERE telegram_user_id=${uid} AND symbol=${m.symbol} AND cooldown_until>NOW()`;if(cooling.length){cooldownSkipped++;continue;}
+   const pending=await db`SELECT 1 FROM testnet_auto_orders WHERE telegram_user_id=${uid} AND symbol=${m.symbol.replace(/USDT$/,"/USDT")} AND side='BUY' AND status NOT IN ('closed','filled','canceled','rejected') LIMIT 1`;if(pending.length){pendingOrders++;continue;}
    const running=await db`SELECT status FROM testnet_auto_accounts WHERE telegram_user_id=${uid}`;
    if(!running.length||running[0].status!=="RUNNING")return {scanned,errors,orders,stopped:true};
    const count=await db`SELECT COUNT(*)::int AS n FROM testnet_auto_positions WHERE telegram_user_id=${uid}`;
-   if(Number(count[0]?.n||0)>=2)continue;
+   if(Number(count[0]?.n||0)>=2){positionLimitSkipped++;continue;}
    const budget=orderBudget;
-   if(budget<10)continue;
-   const result=await testnetOrder(uid,m.symbol,"buy",budget,"EMA_RSI_CONSENSUS",last.t);
+   if(budget<10){budgetSkipped++;continue;}
+   const result=await testnetOrder(uid,m.symbol,"buy",budget,"EMA_RSI_CONSENSUS",last.t);submitted++;
    const filled=Number(result.filled||0),average=Number(result.average||0),status=String(result.status||"").toLowerCase();
    if(filled>0&&average>0&&["closed","filled"].includes(status)){
     const distance=vol*1.5,stop=average-distance,target=average+distance*2;
@@ -203,7 +205,7 @@ async function scanTestnetAccount(account:any){
   }catch(err){errors++;console.warn("Testnet scan failed",item.symbol,err instanceof Error?err.message:String(err));}
  }
  await db`UPDATE testnet_auto_accounts SET last_scan_at=NOW(),updated_at=NOW() WHERE telegram_user_id=${uid} AND status='RUNNING'`;
- return {scanned,errors,orders};
+ return {scanned,errors,signals,consensusRejected,riskRejected,submitted,pendingOrders,cooldownSkipped,positionLimitSkipped,budgetSkipped,orders,orderBudget,usdt,gateSummary};
 }
 async function testnetCycle(){
  if(testnetCycleBusy)return {testnetBusy:true};
