@@ -127,7 +127,8 @@ export async function handlePrivateConnectorRequest(req: Request): Promise<Respo
     } catch (error) {
       const message = error instanceof Error ? error.message : "Erreur exchange inconnue.";
       console.warn("Private account check failed", id, message.slice(0, 180));
-      const restricted = message.includes("451") || /restricted location|eligibility/i.test(message);\n      return json({ ok: false, exchange: id, error: restricted ? "Binance refuse la connexion depuis la région réseau de ce serveur (HTTP 451). Vérifie l’éligibilité régionale Binance. Aucun ordre n’a été envoyé." : "Échec de vérification du compte. Vérifie les clés, permissions, IP autorisées et le type de compte." }, 502);
+      const restricted = message.includes("451") || /restricted location|eligibility/i.test(message);
+      return json({ ok: false, exchange: id, error: restricted ? "Binance refuse la connexion depuis la région réseau de ce serveur (HTTP 451). Vérifie l’éligibilité régionale Binance. Aucun ordre n’a été envoyé." : "Échec de vérification du compte. Vérifie les clés, permissions, IP autorisées et le type de compte." }, 502);
     } finally {
       try { await client?.close?.(); } catch {}
     }
