@@ -70,6 +70,7 @@ function evaluateAgents(candles:any[],closes:number[],ema20Value:number,ema50Val
  return {bullishVotes,totalAgents:AGENT_NAMES.length,agentVotes,consensus:bullishVotes>=12?"ACHAT":"ATTENTE"};
 }
 let cycleBusy=false;
+let testnetCycleBusy=false;
 async function closePosition(row:any,price:number,reason:string,stop=false){
  const qty=Number(row.quantity),entry=Number(row.entry_price),entryFee=Number(row.entry_fee),exitPrice=price*(1-0.0002),gross=qty*exitPrice,fee=gross*0.0005,proceeds=gross-fee,pnl=proceeds-(qty*entry+entryFee);
  await db.begin(async(tx:any)=>{
@@ -215,13 +216,17 @@ async function scanTestnetAccount(account:any){
  return {scanned,errors,orders};
 }
 async function testnetCycle(){
- const accounts=await db`SELECT * FROM testnet_auto_accounts WHERE status='RUNNING' ORDER BY updated_at ASC`;
- for(const account of accounts){
-  if(account.last_scan_at&&Date.now()-new Date(account.last_scan_at).getTime()<55000)continue;
-  try{const result=await scanTestnetAccount(account);console.log("Binance Spot Testnet scanner",account.telegram_user_id,JSON.stringify(result));}
-  catch(err){console.error("Testnet portfolio cycle failed",account.telegram_user_id,err instanceof Error?err.message:String(err));}
- }
- return {testnetAccounts:accounts.length};
+ if(testnetCycleBusy)return {testnetBusy:true};
+ testnetCycleBusy=true;
+ try{
+  const accounts=await db`SELECT * FROM testnet_auto_accounts WHERE status='RUNNING' ORDER BY updated_at ASC`;
+  for(const account of accounts){
+   if(account.last_scan_at&&Date.now()-new Date(account.last_scan_at).getTime()<55000)continue;
+   try{const result=await scanTestnetAccount(account);console.log("Binance Spot Testnet scanner",account.telegram_user_id,JSON.stringify(result));}
+   catch(err){console.error("Testnet portfolio cycle failed",account.telegram_user_id,err instanceof Error?err.message:String(err));}
+  }
+  return {testnetAccounts:accounts.length};
+ }finally{testnetCycleBusy=false;}
 }
 
 async function cycle(){
