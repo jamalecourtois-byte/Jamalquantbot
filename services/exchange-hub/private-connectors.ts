@@ -206,8 +206,8 @@ export async function handlePrivateConnectorRequest(req: Request): Promise<Respo
           amount = Number(client.amountToPrecision(symbol, baseAmount));
           if (!Number.isFinite(amount) || amount <= 0) return json({ ok: false, error: "Quantité arrondie invalide." }, 400);
           const estimatedQuote = amount * price;
-          if (!Number.isFinite(estimatedQuote) || estimatedQuote <= 0 || estimatedQuote > 25.5) {
-            return json({ ok: false, error: "Valeur de l'ordre hors limite Testnet (25 USDT max)." }, 400);
+          if (!Number.isFinite(estimatedQuote) || estimatedQuote <= 0 || estimatedQuote > 50.5) {
+            return json({ ok: false, error: "Valeur de vente supérieure à 50 USDT sur Testnet." }, 400);
           }
           order = await client.createOrder(symbol, "market", "sell", amount, undefined, { clientOrderId });
         }
