@@ -25,7 +25,7 @@ const wordSets=[
 export async function warmNews(items:Market[]){await Promise.all(items.map(item=>headlines(item)));}
 function sentiment(titles:string[],set:number){let score=0;for(const title of titles){const t=title.toLowerCase();for(const w of wordSets[set].up)if(t.includes(w))score++;for(const w of wordSets[set].down)if(t.includes(w))score--;}return clamp(score,-8,8);}
 function backtest(c:Candle[],variant:number){
- const closes=c.map(x=>x.c),outcomes:number[]=[];const first=Math.max(55,c.length-150),last=c.length-13;
+ const closes=c.map(x=>x.c),outcomes:number[]=[];const first=c.length-113,last=first+99;
  for(let i=first;i<=last&&outcomes.length<100;i++){
   const history=closes.slice(0,i+1),fast=ema(history,variant===0?9:variant===1?12:variant===2?20:variant===3?8:14),slow=ema(history,variant===0?21:variant===1?26:variant===2?50:variant===3?18:34);
   const rv=rsi(closes,i),a=atrAt(c,i),p=closes[i];if(!(a>0&&p>0))continue;
@@ -40,7 +40,7 @@ function backtest(c:Candle[],variant:number){
  }
  const wins=outcomes.filter(x=>x>0),losses=outcomes.filter(x=>x<0),winRate=outcomes.length?wins.length/outcomes.length*100:0;
  const avgWin=mean(wins),avgLoss=Math.abs(mean(losses)),rr=avgLoss>0?avgWin/avgLoss:avgWin>0?99:0;
- return {samples:100,trades:outcomes.length,winRate:Number(winRate.toFixed(1)),rewardRisk:Number(rr.toFixed(2)),passed:outcomes.length>=20&&winRate>=55&&rr>=1.2};
+ return {runs:100,samples:outcomes.length,trades:outcomes.length,winRate:Number(winRate.toFixed(1)),rewardRisk:Number(rr.toFixed(2)),passed:outcomes.length>=20&&winRate>=55&&rr>=1.2};
 }
 export async function runAgentPipeline(input:Input){
  const {item,candles:c,price,ema20,ema50,rsi:rv,atr:a}=input,closes=c.map(x=>x.c),last=c.at(-1)!,prior=c.at(-2)!;
@@ -64,6 +64,6 @@ export async function runAgentPipeline(input:Input){
  ];
  const techPass=technical.filter(x=>x.ok).length>=4,newsPass=newsVotes.every(x=>x.bias!=="BAISSIER")&&newsVotes.filter(x=>x.bias==="HAUSSIER").length>=1,simPass=simulations.every(x=>x.passed),riskPass=risk.every(x=>x.ok);
  const valid=techPass&&newsPass&&simPass&&riskPass;
- const agents=[...technical.map(x=>({...x,group:"TECHNIQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),...newsVotes.map(x=>({...x,group:"ACTUALITÉS",ok:x.bias!=="BAISSIER",verdict:x.bias})),...simulations.map(x=>({...x,group:"BACKTEST 100",ok:x.passed,verdict:x.passed?"VALIDÉ":"REFUSÉ",detail:x.trades+" signaux · "+x.winRate+"% réussite · R/R "+x.rewardRisk})),...risk.map(x=>({...x,group:"RISQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),{name:"Agent 19 · Validation finale",group:"GATE FINAL",ok:valid,verdict:valid?"TRADE VALIDÉ":"PAS DE TRADE",detail:"Technique "+(techPass?"OK":"KO")+" · News "+(newsPass?"OK":"KO")+" · Backtests "+(simPass?"OK":"KO")+" · Risque "+(riskPass?"OK":"KO")}];
+ const agents=[...technical.map(x=>({...x,group:"TECHNIQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),...newsVotes.map(x=>({...x,group:"ACTUALITÉS",ok:x.bias!=="BAISSIER",verdict:x.bias})),...simulations.map(x=>({...x,group:"BACKTEST 100",ok:x.passed,verdict:x.passed?"VALIDÉ":"REFUSÉ",detail:x.runs+" simulations · "+x.trades+" signaux · "+x.winRate+"% réussite · R/R "+x.rewardRisk})),...risk.map(x=>({...x,group:"RISQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),{name:"Agent 19 · Validation finale",group:"GATE FINAL",ok:valid,verdict:valid?"TRADE VALIDÉ":"PAS DE TRADE",detail:"Technique "+(techPass?"OK":"KO")+" · News "+(newsPass?"OK":"KO")+" · Backtests "+(simPass?"OK":"KO")+" · Risque "+(riskPass?"OK":"KO")}];
  return {valid,agents,agentVotes:agents.map(x=>({name:x.name,bullish:!!x.ok,verdict:x.verdict,group:x.group,detail:x.detail||""})),bullishVotes:agents.filter(x=>x.ok).length,totalAgents:19,consensus:valid?"ACHAT":"PAS DE TRADE",newsBias:newsVotes.map(x=>x.bias),simulation:simulations,risk:{stopLoss,quantity,notional}};
 }
