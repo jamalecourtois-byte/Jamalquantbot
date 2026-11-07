@@ -12,6 +12,22 @@ Le hub expose l'adaptateur public CCXT et peut reconnaître toutes les plateform
 - Ne pas réutiliser une clé entre plateformes. Révoquer immédiatement toute clé exposée.
 - Les secrets sont lus côté serveur et ne sont jamais renvoyés au client.
 
+## OKX Europe (EEE)
+
+Pour un compte enregistré auprès de l’entité européenne OKX, sélectionner **OKX Europe (EEE)** dans le terminal ou utiliser l’identifiant CCXT `myokx` côté API. CCXT utilise l’adaptateur régional EEE (`eea.okx.com`) ; il ne faut pas réutiliser les clés d’un compte OKX Global : les identifiants régionaux sont distincts.
+
+Variables Railway du service Exchange Hub :
+- `EXCHANGE_MYOKX_API_KEY`
+- `EXCHANGE_MYOKX_API_SECRET`
+- `EXCHANGE_MYOKX_PASSWORD` (passphrase créée avec la clé API, obligatoire)
+- `EXCHANGE_MYOKX_DEFAULT_TYPE=spot` (facultatif)
+
+Créer la clé depuis le compte OKX Europe avec les droits **lecture seule uniquement**, retraits et transferts désactivés. La route privée vérifie les soldes ; elle ne passe aucun ordre. Tant que ces trois variables ne sont pas configurées, `myokx` reste disponible pour les données publiques, mais le compte privé n’est pas connecté.
+
+## Fomo
+
+Aucune intégration directe Fomo n’est activée : Fomo ne publie pas d’API développeur autorisée pour le flux social ou le trading. Ne pas utiliser de session, cookie, endpoint privé, scraper ou SDK non autorisé. Une surveillance on-chain indépendante peut être ajoutée pour des adresses de wallets publiques fournies volontairement, sans prétendre identifier automatiquement les profils Fomo ni extraire leurs données. Elle doit rester séparée de l’application Fomo.
+
 ## Routes internes
 
 Toutes les routes exigent `Authorization: Bearer <CONNECTOR_ADMIN_TOKEN>`.
