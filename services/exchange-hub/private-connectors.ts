@@ -148,7 +148,7 @@ export async function handlePrivateConnectorRequest(req: Request): Promise<Respo
     const side = String(body?.side || "").toLowerCase();
     const quoteAmount = Number(body?.quoteAmount);
     const baseAmount = Number(body?.baseAmount);
-    if (!/^[A-Z0-9]{2,15}\\/USDT$/.test(symbol)) return json({ ok: false, error: "Paire invalide. Format attendu : BTC/USDT." }, 400);
+    if (!/^[A-Z0-9]{2,15}\/USDT$/.test(symbol)) return json({ ok: false, error: "Paire invalide. Format attendu : BTC/USDT." }, 400);
     if (side !== "buy" && side !== "sell") return json({ ok: false, error: "Sens invalide." }, 400);
     if (side === "buy" && (!Number.isFinite(quoteAmount) || quoteAmount <= 0 || quoteAmount > 25)) {
       return json({ ok: false, error: "Achat Testnet limité à 25 USDT par ordre." }, 400);
