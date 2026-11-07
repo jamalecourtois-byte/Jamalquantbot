@@ -35,7 +35,7 @@ async function getMarket(item:any){
   const [pr,cr]=await Promise.all([fetch("https://data-api.binance.vision/api/v3/ticker/price?symbol="+pair,{signal:AbortSignal.timeout(8000)}),fetch("https://data-api.binance.vision/api/v3/klines?symbol="+pair+"&interval=5m&limit=200",{signal:AbortSignal.timeout(9000)})]);
   const pj:any=await pr.json(),rows:any=await cr.json();const price=Number(pj.price);
   if(!pr.ok||!cr.ok||!Number.isFinite(price)||!Array.isArray(rows))throw new Error("Binance data unavailable "+pair);
-  const now=Date.now(),candles=rows.map((x:any[])=>({t:+x[0],end:+x[6],o:+x[1],h:+x[2],l:+x[3],c:+x[4]})).filter((x:any)=>[x.t,x.end,x.o,x.h,x.l,x.c].every(Number.isFinite)&&x.end<now-1000&&x.l>0&&x.h>=Math.max(x.o,x.c)&&x.l<=Math.min(x.o,x.c)&&x.h>=x.l);
+  const now=Date.now(),candles=rows.map((x:any[])=>({t:+x[0],end:+x[6],o:+x[1],h:+x[2],l:+x[3],c:+x[4],v:+x[5]})).filter((x:any)=>[x.t,x.end,x.o,x.h,x.l,x.c].every(Number.isFinite)&&x.end<now-1000&&x.l>0&&x.h>=Math.max(x.o,x.c)&&x.l<=Math.min(x.o,x.c)&&x.h>=x.l);
   if(candles.length<120||now-candles[candles.length-1].end>660000)throw new Error("Bougies 5m insuffisantes ou anciennes "+pair);
   return { ...item,price,candles:candles.slice(-160),currency:"USDT",marketOpen:true,dataAgeMs:0 };
  }
@@ -43,7 +43,7 @@ async function getMarket(item:any){
  url.searchParams.set("interval","5m");url.searchParams.set("range","5d");
  const r=await fetch(url,{headers:{"user-agent":"Mozilla/5.0"},signal:AbortSignal.timeout(10000)}),j:any=await r.json().catch(()=>null),z=j?.chart?.result?.[0],q=z?.indicators?.quote?.[0];
  if(!r.ok||!z||!q)throw new Error("Yahoo data unavailable "+item.symbol);
- const times=z.timestamp||[],now=Date.now(),candles=times.map((t:number,i:number)=>({t:t*1000,end:t*1000+300000,o:+q.open?.[i],h:+q.high?.[i],l:+q.low?.[i],c:+q.close?.[i]})).filter((x:any)=>[x.t,x.end,x.o,x.h,x.l,x.c].every(Number.isFinite)&&x.end<now-1000&&x.l>0&&x.h>=Math.max(x.o,x.c)&&x.l<=Math.min(x.o,x.c)&&x.h>=x.l);
+ const times=z.timestamp||[],now=Date.now(),candles=times.map((t:number,i:number)=>({t:t*1000,end:t*1000+300000,o:+q.open?.[i],h:+q.high?.[i],l:+q.low?.[i],c:+q.close?.[i],v:+q.volume?.[i]})).filter((x:any)=>[x.t,x.end,x.o,x.h,x.l,x.c].every(Number.isFinite)&&x.end<now-1000&&x.l>0&&x.h>=Math.max(x.o,x.c)&&x.l<=Math.min(x.o,x.c)&&x.h>=x.l);
  if(candles.length<120)throw new Error("Pas assez de bougies Yahoo "+item.symbol);
  const dataAgeMs=Math.max(0,now-candles[candles.length-1].end),marketOpen=dataAgeMs<=20*60*1000;
  const price=Number(z.meta?.regularMarketPrice||candles[candles.length-1].c);
