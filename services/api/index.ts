@@ -57,7 +57,7 @@ if(url.pathname==="/miniapp/auto"&&request.method==="POST"){
     const result=await callAutoEngine("/testnet/start",{userId});
     return corsJson({ok:true,...result,data:result});
    }
-   const capital=Number(body.capital);if(!Number.isFinite(capital)||capital<100||capital>1000000)return corsJson({ok:false,error:"Capital fictif compris entre 100 et 1 000 000 USDT."},{status:400});
+   const capital=Number(body.capital);if(!Number.isFinite(capital)||capital<10||capital>1000000)return corsJson({ok:false,error:"Capital fictif compris entre 10 et 1 000 000 USDT."},{status:400});
    const result=await callAutoEngine("/start",{userId,symbol:"AUTO",capital});
    return corsJson({ok:true,...result,data:result});
   }
