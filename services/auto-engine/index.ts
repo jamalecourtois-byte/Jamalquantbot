@@ -294,9 +294,14 @@ async function handle(req:Request){
   if(account.environment!=="binance-spot-testnet"||account.accountConnected!==true)return Response.json({error:"Compte Binance Spot Testnet non vérifié."},{status:409});
   const usdt=Number((account.assets||[]).find((x:any)=>x.asset==="USDT")?.total||0);
   if(usdt<100)return Response.json({error:"Solde USDT Testnet insuffisant pour respecter le budget de risque : minimum 100 USDT requis (10 % maximum par ordre, ordre minimum 10 USDT). Scanner non démarré."},{status:409});
-  await db`INSERT INTO testnet_auto_accounts(telegram_user_id,status,starting_usdt,updated_at) VALUES(${userId},'RUNNING',${usdt},NOW()) ON CONFLICT(telegram_user_id) DO UPDATE SET status='RUNNING',starting_usdt=EXCLUDED.starting_usdt,last_scan_at=NULL,updated_at=NOW()`;
-  void testnetCycle().catch(err=>console.error("Initial Testnet scan failed",err instanceof Error?err.message:String(err)));
-  return Response.json({ok:true,mode:"BINANCE_SPOT_TESTNET",realTradingEnabled:false,status:"RUNNING",startingUsdt:usdt,capital:usdt,cash:usdt,available:usdt,equity:usdt,pnl:0,openPositions:0,universe:universe.filter(x=>x.type==="crypto").length,markets:universe.filter(x=>x.type==="crypto").map(x=>x.symbol),maxOrderUsdt:25,maxOpenPositions:2});
+  const prior=await db`SELECT status,starting_usdt FROM testnet_auto_accounts WHERE telegram_user_id=${userId}`;
+  const alreadyRunning=prior.length>0&&String(prior[0].status)==="RUNNING";
+  if(!alreadyRunning){
+   await db`INSERT INTO testnet_auto_accounts(telegram_user_id,status,starting_usdt,updated_at) VALUES(${userId},'RUNNING',${usdt},NOW()) ON CONFLICT(telegram_user_id) DO UPDATE SET status='RUNNING',starting_usdt=EXCLUDED.starting_usdt,last_scan_at=NULL,updated_at=NOW()`;
+   void testnetCycle().catch(err=>console.error("Initial Testnet scan failed",err instanceof Error?err.message:String(err)));
+  }
+  const startingUsdt=alreadyRunning?Number(prior[0].starting_usdt):usdt;
+  return Response.json({ok:true,mode:"BINANCE_SPOT_TESTNET",realTradingEnabled:false,status:"RUNNING",alreadyRunning,startingUsdt,capital:startingUsdt,cash:usdt,available:usdt,equity:usdt,pnl:usdt-startingUsdt,openPositions:0,universe:universe.filter(x=>x.type==="crypto").length,markets:universe.filter(x=>x.type==="crypto").map(x=>x.symbol),maxOrderUsdt:25,maxOpenPositions:2});
  }
  if(url.pathname==="/testnet/status"){
   const cryptoMarkets=universe.filter(x=>x.type==="crypto");
