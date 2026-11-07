@@ -51,7 +51,7 @@ Bun.serve({port:Number(Bun.env.PORT||3000),websocket:{
  if(u.pathname==="/ws/orderbook"){
   const id=(u.searchParams.get("exchange")||"").toLowerCase(),symbol=(u.searchParams.get("symbol")||"").trim();
   if(!allowed.has(id))return json({ok:false,error:"Exchange non pris en charge par CCXT"},400);
-  if(!/^[A-Z0-9]{2,20}\\/[A-Z0-9]{2,20}(:[A-Z0-9]{2,20})?$/.test(symbol))return json({ok:false,error:"Symbole invalide. Format attendu : BTC/USDT"},400);
+  if(!/^[A-Z0-9]{2,20}\/[A-Z0-9]{2,20}(:[A-Z0-9]{2,20})?$/.test(symbol))return json({ok:false,error:"Symbole invalide. Format attendu : BTC/USDT"},400);
   if(typeof (ccxt as any).pro?.[id]!=="function")return json({ok:false,error:"Flux CCXT Pro indisponible pour cet exchange"},501);
   const upgraded=server.upgrade(req,{data:{exchangeId:id,symbol,stream:null}});
   return upgraded?undefined:json({ok:false,error:"Impossible d'ouvrir le flux WebSocket"},500);
