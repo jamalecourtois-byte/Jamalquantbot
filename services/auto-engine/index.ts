@@ -49,7 +49,7 @@ async function closePosition(row:any,price:number,reason:string,stop=false){
   await tx`DELETE FROM paper_auto_positions WHERE telegram_user_id=${row.telegram_user_id} AND symbol=${row.symbol}`;
   await tx`INSERT INTO paper_auto_cooldowns(telegram_user_id,symbol,cooldown_until) VALUES(${row.telegram_user_id},${row.symbol},NOW()+INTERVAL '5 minutes') ON CONFLICT(telegram_user_id,symbol) DO UPDATE SET cooldown_until=EXCLUDED.cooldown_until`;
  });
- await telegram("🔔 JAMALQUANT · SORTIE SIMULÉE\n"+row.symbol+" ("+row.market_type+")\n"+reason+"\nP/L net estimé : "+(pnl>=0?"+":"")+fmt(pnl)+" USD\nAucun ordre réel.",Number(row.telegram_user_id));
+ void telegram("🔔 JAMALQUANT · SORTIE SIMULÉE\n"+row.symbol+" ("+row.market_type+")\n"+reason+"\nP/L net estimé : "+(pnl>=0?"+":"")+fmt(pnl)+" USD\nAucun ordre réel.",Number(row.telegram_user_id)).catch(err=>console.warn("Close notification failed:",err instanceof Error?err.message:String(err)));
 }
 async function scanPortfolio(account:any,positions:any[]){
  const uid=Number(account.telegram_user_id),now=Date.now();
