@@ -1,5 +1,5 @@
 import postgres from "postgres@3.4.7";
-import { runAgentPipeline } from "./agent-pipeline.ts";
+import { runAgentPipeline, warmNews } from "./agent-pipeline.ts";
 const env=Bun.env;
 if(!env.DATABASE_URL||!env.AUTO_ENGINE_SECRET)throw new Error("DATABASE_URL ou AUTO_ENGINE_SECRET manquant");
 const db=postgres(env.DATABASE_URL,{max:8,idle_timeout:20,connect_timeout:10});
@@ -67,6 +67,7 @@ async function closePosition(row:any,price:number,reason:string,stop=false){
 }
 async function scanPortfolio(account:any,positions:any[]){
  const uid=Number(account.telegram_user_id),now=Date.now();
+ await warmNews(universe);
  const held=new Map(positions.map((p:any)=>[p.symbol,p]));
  const results:any[]=[];let errors=0;
  for(let i=0;i<universe.length;i+=6){
@@ -134,6 +135,7 @@ async function testnetOrder(uid:number,symbol:string,side:"buy"|"sell",amount:nu
 async function scanTestnetAccount(account:any){
  const uid=Number(account.telegram_user_id);
  const cryptoMarkets=universe.filter(x=>x.type==="crypto");
+ await warmNews(cryptoMarkets);
  let scanned=0,errors=0,orders=0;
  for(const item of cryptoMarkets){
   try{
