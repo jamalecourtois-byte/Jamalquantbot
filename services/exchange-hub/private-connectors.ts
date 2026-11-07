@@ -22,6 +22,22 @@ async function constantTimeEqual(a: string, b: string) {
   for (let i = 0; i < x.length; i++) diff |= x[i] ^ y[i];
   return diff === 0;
 }
+// Serialize submissions with the same Binance clientOrderId inside this service process.
+// Binance remains the durable idempotency authority across restarts and retries.
+const orderLocks = new Map<string, Promise<void>>();
+async function acquireOrderLock(key: string): Promise<() => void> {
+  const previous = orderLocks.get(key) || Promise.resolve();
+  let unlock!: () => void;
+  const current = new Promise<void>((resolve) => { unlock = resolve; });
+  const queued = previous.then(() => current);
+  orderLocks.set(key, queued);
+  await previous;
+  return () => {
+    unlock();
+    if (orderLocks.get(key) === queued) orderLocks.delete(key);
+  };
+}
+
 async function authorized(req: Request) {
   const expected = String(env.CONNECTOR_ADMIN_TOKEN || "");
   const supplied = req.headers.get("authorization") || "";
@@ -160,6 +176,9 @@ export async function handlePrivateConnectorRequest(req: Request): Promise<Respo
     if (side === "sell" && (!Number.isFinite(baseAmount) || baseAmount <= 0)) {
       return json({ ok: false, error: "Quantité de vente invalide." }, 400);
     }
+    // Prevent concurrent requests in this process from both observing "not found"
+    // and racing to submit the same client order ID.
+    const releaseOrderLock = await acquireOrderLock(clientOrderId);
     let client: any;
     try {
       client = makeClient("binance");
@@ -258,6 +277,7 @@ export async function handlePrivateConnectorRequest(req: Request): Promise<Respo
       return json({ ok: false, environment: "binance-spot-testnet", error: "Ordre Testnet refusé. Vérifie les clés Testnet, le solde et les filtres de marché." }, 502);
     } finally {
       try { await client?.close?.(); } catch {}
+      releaseOrderLock();
     }
   }
 
