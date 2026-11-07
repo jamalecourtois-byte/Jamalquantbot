@@ -184,9 +184,9 @@ export async function handlePrivateConnectorRequest(req: Request): Promise<Respo
         }
       }
 
+      let amount: number | undefined;
       if (!order) {
         const balance = await client.fetchBalance();
-        let amount: number | undefined;
         if (side === "buy") {
           const freeQuote = Number(balance?.free?.USDT || 0);
           if (freeQuote < quoteAmount) return json({ ok: false, error: "Solde USDT Testnet insuffisant.", available: freeQuote }, 409);
