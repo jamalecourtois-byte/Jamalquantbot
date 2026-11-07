@@ -72,7 +72,7 @@ Bun.serve({port:Number(Bun.env.PORT||3000),websocket:{
  if(u.pathname==="/ohlcv"||u.pathname==="/ticker"){
   const id=(u.searchParams.get("exchange")||"").toLowerCase(),symbol=(u.searchParams.get("symbol")||"").trim();
   if(id==="yahoo"){
-   const validSymbols=new Set(["EURUSD=X","GBPUSD=X","XAUUSD=X","XAGUSD=X","CL=F","^GSPC","^IXIC","AAPL","MSFT","NVDA","AMZN"]);
+   const validSymbols=new Set(["EURUSD=X","GBPUSD=X","GC=F","SI=F","XAUUSD=X","XAGUSD=X","CL=F","^GSPC","^IXIC","AAPL","MSFT","NVDA","AMZN"]);
    if(!validSymbols.has(symbol))return json({ok:false,error:"Symbole Yahoo non autorisé"},400);
    const requested=u.searchParams.get("timeframe")||"1m",intervalMap:Record<string,string>={"1m":"1m","5m":"5m","15m":"15m","1h":"60m","4h":"60m","1d":"1d"};
    const interval=intervalMap[requested];if(!interval)return json({ok:false,error:"Timeframe Yahoo non pris en charge"},400);
