@@ -36,8 +36,8 @@ async function getMarket(item:any){
   const pj:any=await pr.json(),rows:any=await cr.json();const price=Number(pj.price);
   if(!pr.ok||!cr.ok||!Number.isFinite(price)||!Array.isArray(rows))throw new Error("Binance data unavailable "+pair);
   const now=Date.now(),candles=rows.map((x:any[])=>({t:+x[0],end:+x[6],o:+x[1],h:+x[2],l:+x[3],c:+x[4],v:+x[5]})).filter((x:any)=>[x.t,x.end,x.o,x.h,x.l,x.c].every(Number.isFinite)&&x.end<now-1000&&x.l>0&&x.h>=Math.max(x.o,x.c)&&x.l<=Math.min(x.o,x.c)&&x.h>=x.l);
-  if(candles.length<850||now-candles[candles.length-1].end>660000)throw new Error("Bougies 5m insuffisantes ou anciennes "+pair);
-  return { ...item,price,candles:candles.slice(-900),currency:"USDT",marketOpen:true,dataAgeMs:0 };
+  if(candles.length<800||now-candles[candles.length-1].end>660000)throw new Error("Bougies 5m insuffisantes ou anciennes "+pair);
+  return { ...item,price,candles:candles.slice(-1000),currency:"USDT",marketOpen:true,dataAgeMs:0 };
  }
  const url=new URL("https://query1.finance.yahoo.com/v8/finance/chart/"+encodeURIComponent(item.symbol));
  url.searchParams.set("interval","5m");url.searchParams.set("range","5d");
