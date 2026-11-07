@@ -135,12 +135,15 @@ async function testnetOrder(uid:number,symbol:string,side:"buy"|"sell",amount:nu
 async function scanTestnetAccount(account:any){
  const uid=Number(account.telegram_user_id);
  const cryptoMarkets=universe.filter(x=>x.type==="crypto");
+ const accountData=await testnetRequest("/private/account",{exchange:"binance"});
+ if(accountData.environment!=="binance-spot-testnet"||accountData.accountConnected!==true)throw new Error("Compte Binance Spot Testnet non confirmé.");
+ const usdt=Number((accountData.assets||[]).find((x:any)=>x.asset==="USDT")?.total||0),orderBudget=Math.min(25,usdt*0.10);
  await warmNews(cryptoMarkets);
  let scanned=0,errors=0,orders=0;
  for(const item of cryptoMarkets){
   try{
    const m=await getMarket(item),cs=m.candles,closes=cs.map((x:any)=>x.c),e20=ema(closes,20),e50=ema(closes,50),rv=rsi(closes),vol=atr(cs),last=cs[cs.length-1],prev=cs[cs.length-2];
-   const vote=await runAgentPipeline({item:m,candles:cs,price:m.price,ema20:e20,ema50:e50,rsi:rv,atr:vol,riskBudget:25,availableCash:250,maxOrderNotional:25,minimumOrderNotional:10,onProgress:(rows:any[])=>{const current=agentState.get(m.symbol)||{};agentState.set(m.symbol,{...current,symbol:m.symbol,type:"crypto",price:m.price,ema20:e20,ema50:e50,rsi:rv,trend:e20>e50?"HAUSSIER":"BAISSIER",pipelineValid:false,agentVotes:rows.map(x=>({name:x.name,bullish:!!x.ok,verdict:x.verdict,group:x.group,detail:x.detail||""})),agentCount:19,state:"ANALYSE DES AGENTS "+rows.length+"/19",updatedAt:Date.now()});}});
+   const vote=await runAgentPipeline({item:m,candles:cs,price:m.price,ema20:e20,ema50:e50,rsi:rv,atr:vol,riskBudget:orderBudget*0.01,availableCash:usdt,maxOrderNotional:orderBudget,minimumOrderNotional:10,onProgress:(rows:any[])=>{const current=agentState.get(m.symbol)||{};agentState.set(m.symbol,{...current,symbol:m.symbol,type:"crypto",price:m.price,ema20:e20,ema50:e50,rsi:rv,trend:e20>e50?"HAUSSIER":"BAISSIER",pipelineValid:false,agentVotes:rows.map(x=>({name:x.name,bullish:!!x.ok,verdict:x.verdict,group:x.group,detail:x.detail||""})),agentCount:19,state:"ANALYSE DES AGENTS "+rows.length+"/19",updatedAt:Date.now()});}});
    const signal=vote.valid;
    agentState.set(m.symbol,{symbol:m.symbol,type:"crypto",price:m.price,ema20:e20,ema50:e50,rsi:rv,trend:e20>e50?"HAUSSIER":"BAISSIER",signal,score:vote.bullishVotes,agentCount:vote.totalAgents,agentVotes:vote.agentVotes,pipelineValid:vote.valid,consensus:vote.consensus,newsBias:vote.newsBias,simulation:vote.simulation,risk:vote.risk,state:"TESTNET · "+(signal?"SIGNAL ACHAT":"ANALYSÉ · ATTENTE"),changePct:(m.price/cs[0].c-1)*100,spark:cs.slice(-40).map((x:any)=>x.c),chartCandles:cs.slice(-60).map((x:any)=>({t:x.t,o:x.o,h:x.h,l:x.l,c:x.c})),updatedAt:Date.now()});
    scanned++;
@@ -183,10 +186,7 @@ async function scanTestnetAccount(account:any){
    if(!running.length||running[0].status!=="RUNNING")return {scanned,errors,orders,stopped:true};
    const count=await db`SELECT COUNT(*)::int AS n FROM testnet_auto_positions WHERE telegram_user_id=${uid}`;
    if(Number(count[0]?.n||0)>=2)continue;
-   const accountData=await testnetRequest("/private/account",{exchange:"binance"});
-   if(accountData.environment!=="binance-spot-testnet")throw new Error("Environnement Binance non-Testnet : ordre bloqué.");
-   const usdt=Number((accountData.assets||[]).find((x:any)=>x.asset==="USDT")?.total||0);
-   const budget=Math.min(25,usdt*0.10);
+   const budget=orderBudget;
    if(budget<10)continue;
    const result=await testnetOrder(uid,m.symbol,"buy",budget,"EMA_RSI_CONSENSUS",last.t);
    const filled=Number(result.filled||0),average=Number(result.average||0),status=String(result.status||"").toLowerCase();
