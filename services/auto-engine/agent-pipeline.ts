@@ -59,7 +59,11 @@ export async function runAgentPipeline(input:Input){
  input.onProgress?.([...technical.map(x=>({...x,group:"TECHNIQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),...newsVotes.map(x=>({...x,group:"ACTUALITÉS",ok:x.bias!=="BAISSIER",verdict:x.bias}))]);
  const simulations=Array.from({length:5},(_,i)=>({name:["Simulation EMA / RSI","Simulation pullback","Simulation breakout","Simulation momentum","Simulation multi-facteurs"][i],...backtest(c,i)}));
  input.onProgress?.([...technical.map(x=>({...x,group:"TECHNIQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),...newsVotes.map(x=>({...x,group:"ACTUALITÉS",ok:x.bias!=="BAISSIER",verdict:x.bias})),...simulations.map(x=>({...x,group:"BACKTEST 100",ok:x.passed,verdict:x.passed?"VALIDÉ":"REFUSÉ",detail:x.runs+" simulations · "+x.trades+" signaux · "+x.winRate+"% réussite · R/R "+x.rewardRisk}))]);
- const stopDistance=1.5*a,stopLoss=price-stopDistance,riskBudget=Math.max(0,input.riskBudget),qtyRisk=stopDistance>0?riskBudget/stopDistance:0,qtyCash=price>0?input.availableCash*0.12/price:0,quantity=Math.max(0,Math.min(qtyRisk,qtyCash)),notional=quantity*price;
+ const stopDistance=1.5*a,stopLoss=price-stopDistance,riskBudget=Math.max(0,input.riskBudget),qtyRisk=stopDistance>0?riskBudget/stopDistance:0;
+ // Cap the quantity by BOTH available cash and the configured per-order notional.
+ // Previously the 12% cash cap could exceed maxOrderNotional and reject every otherwise valid signal.
+ const cashCap=Math.max(0,Math.min(input.availableCash*0.12,input.maxOrderNotional));
+ const qtyCash=price>0?cashCap/price:0,quantity=Math.max(0,Math.min(qtyRisk,qtyCash)),notional=quantity*price;
  const risk=[
   {name:"Stop-loss et distance de risque",ok:stopLoss>0&&stopDistance/price>=0.0005&&stopDistance/price<=0.05,detail:"Stop "+stopLoss.toPrecision(8)+" · distance "+(stopDistance/price*100).toFixed(2)+"%"},
   {name:"Taille de position",ok:quantity>0&&notional<=input.maxOrderNotional&&notional<=input.availableCash*0.12,detail:"Quantité "+quantity.toPrecision(6)+" · exposition "+notional.toFixed(2)},
