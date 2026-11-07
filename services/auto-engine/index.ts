@@ -19,6 +19,7 @@ await db`CREATE TABLE IF NOT EXISTS testnet_auto_accounts (telegram_user_id BIGI
 await db`CREATE TABLE IF NOT EXISTS testnet_auto_positions (telegram_user_id BIGINT NOT NULL REFERENCES testnet_auto_accounts(telegram_user_id) ON DELETE CASCADE, symbol TEXT NOT NULL, quantity NUMERIC(30,12) NOT NULL, entry_price NUMERIC(24,10) NOT NULL, stop_price NUMERIC(24,10) NOT NULL, target_price NUMERIC(24,10) NOT NULL, highest_price NUMERIC(24,10) NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(telegram_user_id,symbol))`;
 await db`CREATE TABLE IF NOT EXISTS testnet_auto_orders (id BIGSERIAL PRIMARY KEY, telegram_user_id BIGINT NOT NULL, client_order_id TEXT NOT NULL UNIQUE, exchange_order_id TEXT, symbol TEXT NOT NULL, side TEXT NOT NULL, quantity NUMERIC(30,12) NOT NULL DEFAULT 0, filled NUMERIC(30,12) NOT NULL DEFAULT 0, average NUMERIC(24,10) NOT NULL DEFAULT 0, cost NUMERIC(24,8) NOT NULL DEFAULT 0, status TEXT NOT NULL, reason TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
 await db`CREATE INDEX IF NOT EXISTS testnet_auto_orders_user_created_idx ON testnet_auto_orders(telegram_user_id,created_at DESC)`;
+await db`CREATE TABLE IF NOT EXISTS testnet_auto_cooldowns (telegram_user_id BIGINT NOT NULL, symbol TEXT NOT NULL, cooldown_until TIMESTAMPTZ NOT NULL, PRIMARY KEY(telegram_user_id,symbol))`;
 
 const fmt=(n:number)=>Number(n||0).toLocaleString("fr-FR",{minimumFractionDigits:2,maximumFractionDigits:2});
 const universe=[{symbol:"BTCUSDT",type:"crypto"},{symbol:"ETHUSDT",type:"crypto"},{symbol:"SOLUSDT",type:"crypto"},{symbol:"BNBUSDT",type:"crypto"},{symbol:"XRPUSDT",type:"crypto"},{symbol:"DOGEUSDT",type:"crypto"},{symbol:"LINKUSDT",type:"crypto"},{symbol:"AVAXUSDT",type:"crypto"},{symbol:"EURUSD=X",type:"forex"},{symbol:"GBPUSD=X",type:"forex"},{symbol:"GC=F",type:"commodity"},{symbol:"SI=F",type:"commodity"},{symbol:"CL=F",type:"commodity"},{symbol:"^GSPC",type:"index"},{symbol:"^IXIC",type:"index"},{symbol:"AAPL",type:"stock"},{symbol:"MSFT",type:"stock"},{symbol:"NVDA",type:"stock"},{symbol:"AMZN",type:"stock"}];
@@ -164,6 +165,7 @@ async function scanTestnetAccount(account:any){
      const filled=Number(result.filled||0),average=Number(result.average||m.price);
      if(filled>0&&["closed","filled"].includes(String(result.status||"").toLowerCase())){
       await db`DELETE FROM testnet_auto_positions WHERE telegram_user_id=${uid} AND symbol=${m.symbol}`;
+      await db`INSERT INTO testnet_auto_cooldowns(telegram_user_id,symbol,cooldown_until) VALUES(${uid},${m.symbol},NOW()+INTERVAL '5 minutes') ON CONFLICT(telegram_user_id,symbol) DO UPDATE SET cooldown_until=EXCLUDED.cooldown_until`;
       orders++;
       void telegram("🔴 JAMALQUANT · VENTE TESTNET\n"+m.symbol+"\nQuantité exécutée : "+fmt(filled)+"\nPrix moyen : "+fmt(average)+"\nStatut : "+String(result.status),uid).catch(()=>{});
      }
@@ -171,6 +173,8 @@ async function scanTestnetAccount(account:any){
     continue;
    }
    if(!signal)continue;
+   const cooling=await db`SELECT 1 FROM testnet_auto_cooldowns WHERE telegram_user_id=${uid} AND symbol=${m.symbol} AND cooldown_until>NOW()`;if(cooling.length)continue;
+   const pending=await db`SELECT 1 FROM testnet_auto_orders WHERE telegram_user_id=${uid} AND symbol=${m.symbol.replace(/USDT$/,"/USDT")} AND side='BUY' AND status NOT IN ('closed','filled','canceled','rejected') LIMIT 1`;if(pending.length)continue;
    const running=await db`SELECT status FROM testnet_auto_accounts WHERE telegram_user_id=${uid}`;
    if(!running.length||running[0].status!=="RUNNING")return {scanned,errors,orders,stopped:true};
    const count=await db`SELECT COUNT(*)::int AS n FROM testnet_auto_positions WHERE telegram_user_id=${uid}`;
