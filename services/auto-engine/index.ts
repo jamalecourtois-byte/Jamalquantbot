@@ -139,7 +139,7 @@ async function handle(req:Request){
   await db`DELETE FROM paper_auto_equity_history WHERE telegram_user_id=${userId}`;
   await db`INSERT INTO paper_auto_equity_history(telegram_user_id,session_started_at,equity,pnl) VALUES(${userId},NOW(),${capital},0)`;
   void cycle().catch(err=>console.error('Initial multi-market scan failed',err instanceof Error?err.message:String(err)));
-  await telegram("🚀 JAMALQUANT MULTI-MARCHÉS ACTIVÉ\nCapital fictif : "+fmt(capital)+" USD\nUnivers : "+universe.length+" marchés (crypto, forex, matières premières, indices, actions)\nScan automatique toutes les ~60 secondes.\nMode simulation : aucun ordre réel, aucun gain garanti.",userId);
+  try{await telegram("🚀 JAMALQUANT MULTI-MARCHÉS ACTIVÉ\nCapital fictif : "+fmt(capital)+" USD\nUnivers : "+universe.length+" marchés (crypto, forex, matières premières, indices, actions)\nScan automatique toutes les ~60 secondes.\nMode simulation : aucun ordre réel, aucun gain garanti.",userId);}catch(err){console.warn("Start notification failed; paper portfolio remains active:",err instanceof Error?err.message:String(err));}
   return Response.json({ok:true,alreadyRunning:false,capital,universe:universe.length,markets:universe.map(x=>x.symbol),scanStarted:true});
  }
  if(url.pathname==="/status"){
@@ -151,12 +151,16 @@ async function handle(req:Request){
  }
  if(url.pathname==="/stop"){
   const a=await db`SELECT * FROM paper_auto_portfolios WHERE telegram_user_id=${userId} AND status='RUNNING'`;if(!a.length)return Response.json({error:"Aucun portefeuille actif"},{status:404});
+  await db`UPDATE paper_auto_portfolios SET status='STOPPED',updated_at=NOW() WHERE telegram_user_id=${userId}`;
   const positions=await db`SELECT * FROM paper_auto_positions WHERE telegram_user_id=${userId}`;
   for(const x of positions)await closePosition(x,Number(x.mark_price),"Arrêt demandé",true);
-  await db`UPDATE paper_auto_portfolios SET status='STOPPED',updated_at=NOW() WHERE telegram_user_id=${userId}`;
   return Response.json({ok:true,stopped:true,closedPositions:positions.length});
  }
  if(url.pathname==="/cycle"){const result=await cycle();return Response.json({ok:true,...result});}
  return new Response("Not found",{status:404});
 }
 Bun.serve({port:Number(env.PORT||3000),fetch:handle});
+// Le moteur doit continuer à scanner les portefeuilles actifs après le démarrage initial.
+const cycleIntervalMs=60_000;
+setInterval(()=>{void cycle().catch(err=>console.error("Scheduled paper cycle failed:",err instanceof Error?err.message:String(err)));},cycleIntervalMs);
+console.log("Paper engine scheduler enabled:",cycleIntervalMs,"ms");
