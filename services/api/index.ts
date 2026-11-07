@@ -36,6 +36,13 @@ if(url.pathname==="/miniapp/auto"&&request.method==="POST"){
   const userId=Number(telegramUser?.id);if(!Number.isSafeInteger(userId)||userId<=0)return corsJson({ok:false,error:"Identifiant Telegram invalide."},{status:401});
   let body:any;try{body=await request.json();}catch{return corsJson({ok:false,error:"Requête JSON invalide."},{status:400});}
   const action=String(body?.action||"");
+  if(action==="testnet_status"){
+   const admins=String(env.CONNECTOR_ADMIN_TELEGRAM_IDS||"").split(",").map((x:string)=>x.trim()).filter(Boolean);
+   if(!admins.includes(String(userId)))return corsJson({ok:false,error:"Vérification Testnet réservée à l'administrateur."},{status:403});
+   const account=await callPrivateConnector("/private/account",{exchange:"binance"});
+   if(account.environment!=="binance-spot-testnet")return corsJson({ok:false,error:"Le connecteur Binance ne confirme pas l'environnement Spot Testnet. Aucun ordre autorisé."},{status:409});
+   return corsJson({ok:true,data:{environment:account.environment,accountConnected:account.accountConnected===true,assets:account.assets||[],timestamp:account.timestamp,note:account.note}});
+  }
   if(action==="auto_start"){
    const capital=Number(body.capital);if(!Number.isFinite(capital)||capital<100||capital>1000000)return corsJson({ok:false,error:"Capital fictif compris entre 100 et 1 000 000 USDT."},{status:400});
    const result=await callAutoEngine("/start",{userId,symbol:"AUTO",capital});
