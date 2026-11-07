@@ -48,7 +48,7 @@ async function getMarket(item:any){
  const dataAgeMs=Math.max(0,now-candles[candles.length-1].end),marketOpen=dataAgeMs<=20*60*1000;
  const price=Number(z.meta?.regularMarketPrice||candles[candles.length-1].c);
  if(!Number.isFinite(price)||price<=0)throw new Error("Prix Yahoo invalide "+item.symbol);
- return {...item,price,candles:candles.slice(-160),currency:"USD",marketOpen,dataAgeMs};
+ return {...item,price,candles:candles.slice(-180),currency:"USD",marketOpen,dataAgeMs};
 }
 function ema(v:number[],n:number){let x=v.slice(0,n).reduce((a,b)=>a+b,0)/n,k=2/(n+1);for(const z of v.slice(n))x=z*k+x*(1-k);return x;}
 function rsi(v:number[]){const d=v.slice(1).map((x,i)=>x-v[i]);let g=0,l=0;for(const x of d.slice(0,14)){g+=Math.max(0,x);l+=Math.max(0,-x);}g/=14;l/=14;for(const x of d.slice(14)){g=(g*13+Math.max(0,x))/14;l=(l*13+Math.max(0,-x))/14;}return l===0?(g===0?50:100):100-100/(1+g/l);}
