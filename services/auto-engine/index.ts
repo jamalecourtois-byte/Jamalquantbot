@@ -24,7 +24,7 @@ async function getMarket(item:any){
   if(!pr.ok||!cr.ok||!Number.isFinite(price)||!Array.isArray(rows))throw new Error("Binance data unavailable "+pair);
   const now=Date.now(),candles=rows.map((x:any[])=>({t:+x[0],end:+x[6],o:+x[1],h:+x[2],l:+x[3],c:+x[4]})).filter((x:any)=>[x.t,x.end,x.o,x.h,x.l,x.c].every(Number.isFinite)&&x.end<now-1000&&x.l>0&&x.h>=Math.max(x.o,x.c)&&x.l<=Math.min(x.o,x.c)&&x.h>=x.l);
   if(candles.length<60||now-candles[candles.length-1].end>660000)throw new Error("Bougies 5m insuffisantes ou anciennes "+pair);
-  return { ...item,price,candles:candles.slice(-80),currency:"USDT" };
+  return { ...item,price,candles:candles.slice(-80),currency:"USDT",marketOpen:true,dataAgeMs:0 };
  }
  const url=new URL("https://query1.finance.yahoo.com/v8/finance/chart/"+encodeURIComponent(item.symbol));
  url.searchParams.set("interval","5m");url.searchParams.set("range","5d");
@@ -32,10 +32,10 @@ async function getMarket(item:any){
  if(!r.ok||!z||!q)throw new Error("Yahoo data unavailable "+item.symbol);
  const times=z.timestamp||[],now=Date.now(),candles=times.map((t:number,i:number)=>({t:t*1000,end:t*1000+300000,o:+q.open?.[i],h:+q.high?.[i],l:+q.low?.[i],c:+q.close?.[i]})).filter((x:any)=>[x.t,x.end,x.o,x.h,x.l,x.c].every(Number.isFinite)&&x.end<now-1000&&x.l>0&&x.h>=Math.max(x.o,x.c)&&x.l<=Math.min(x.o,x.c)&&x.h>=x.l);
  if(candles.length<60)throw new Error("Pas assez de bougies Yahoo "+item.symbol);
- if(now-candles[candles.length-1].end>20*60*1000)throw new Error("MARCHÉ FERMÉ ou données périmées "+item.symbol);
+ const dataAgeMs=Math.max(0,now-candles[candles.length-1].end),marketOpen=dataAgeMs<=20*60*1000;
  const price=Number(z.meta?.regularMarketPrice||candles[candles.length-1].c);
  if(!Number.isFinite(price)||price<=0)throw new Error("Prix Yahoo invalide "+item.symbol);
- return {...item,price,candles:candles.slice(-80),currency:"USD"};
+ return {...item,price,candles:candles.slice(-80),currency:"USD",marketOpen,dataAgeMs};
 }
 function ema(v:number[],n:number){let x=v.slice(0,n).reduce((a,b)=>a+b,0)/n,k=2/(n+1);for(const z of v.slice(n))x=z*k+x*(1-k);return x;}
 function rsi(v:number[]){const d=v.slice(1).map((x,i)=>x-v[i]);let g=0,l=0;for(const x of d.slice(0,14)){g+=Math.max(0,x);l+=Math.max(0,-x);}g/=14;l/=14;for(const x of d.slice(14)){g=(g*13+Math.max(0,x))/14;l=(l*13+Math.max(0,-x))/14;}return l===0?(g===0?50:100):100-100/(1+g/l);}
@@ -62,8 +62,10 @@ async function scanPortfolio(account:any,positions:any[]){
    const s=settled[j];if(s.status==="rejected"){errors++;const reason=String(s.reason);agentState.set(batch[j].symbol,{...(agentState.get(batch[j].symbol)||{}),symbol:batch[j].symbol,type:batch[j].type,state:/FERM/.test(reason)?"MARCHÉ FERMÉ":"DONNÉES INDISPONIBLES",updatedAt:Date.now()});console.warn("Market scan failed",batch[j].symbol,reason);continue;}
    const m=s.value,cs=m.candles,closes=cs.map((x:any)=>x.c),e20=ema(closes,20),e50=ema(closes,50),rv=rsi(closes),vol=atr(cs),last=cs[cs.length-1],prev=cs[cs.length-2];
    const signal=e20>e50&&last.c>e20&&rv>=52&&rv<=68&&last.c>prev.c&&vol>0;
-   agentState.set(m.symbol,{symbol:m.symbol,type:m.type,price:m.price,ema20:e20,ema50:e50,rsi:rv,trend:e20>e50?"HAUSSIER":"BAISSIER",signal,state:held.has(m.symbol)?"EN POSITION":signal?"SIGNAL":"ATTENTE",changePct:(m.price/cs[0].c-1)*100,spark:cs.slice(-40).map((x:any)=>x.c),chartCandles:cs.slice(-60).map((x:any)=>({t:x.t,o:x.o,h:x.h,l:x.l,c:x.c})),updatedAt:Date.now()});
+   agentState.set(m.symbol,{symbol:m.symbol,type:m.type,price:m.price,ema20:e20,ema50:e50,rsi:rv,trend:e20>e50?"HAUSSIER":"BAISSIER",signal:Boolean(m.marketOpen)&&signal,state:!m.marketOpen?"MARCHÉ FERMÉ · ANALYSE HISTORIQUE":held.has(m.symbol)?"EN POSITION":signal?"SIGNAL":"ANALYSÉ · ATTENTE",changePct:(m.price/cs[0].c-1)*100,spark:cs.slice(-40).map((x:any)=>x.c),chartCandles:cs.slice(-60).map((x:any)=>({t:x.t,o:x.o,h:x.h,l:x.l,c:x.c})),dataAgeMinutes:Math.round((Number(m.dataAgeMs)||0)/60000),updatedAt:Date.now()});
    results.push(m);
+   // Closed markets remain analyzable from their last valid candles, but never generate paper orders or stale-price exits.
+   if(!m.marketOpen)continue;
    const pos:any=held.get(m.symbol);
    if(pos){
     const entry=Number(pos.entry_price),risk=Number(pos.initial_risk),high=Math.max(Number(pos.highest_price),m.price);
