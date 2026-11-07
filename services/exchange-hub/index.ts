@@ -1,6 +1,7 @@
 import ccxt from "ccxt";
 import { handlePrivateConnectorRequest } from "./private-connectors.ts";
 const DASHBOARD_HTML = await Bun.file(new URL("./dashboard.html", import.meta.url)).text();
+const WALLET_HTML = await Bun.file(new URL("./wallet.html", import.meta.url)).text();
 const exchangeClients=new Map<string,any>();
 const brokerCatalog=[
  {id:"interactive_brokers",name:"Interactive Brokers",markets:["stocks","options","futures","forex","bonds"],protocol:"TWS API / Client Portal API",status:"catalogue-only-needs-account-and-gateway"},
@@ -47,7 +48,8 @@ Bun.serve({port:Number(Bun.env.PORT||3000),websocket:{
  const u=new URL(req.url);
  if(req.method==="OPTIONS")return new Response(null,{status:204,headers:{"access-control-allow-origin":"*","access-control-allow-methods":"GET,OPTIONS","access-control-allow-headers":"content-type"}});
  if(req.method!=="GET")return json({ok:false,error:"Méthode non autorisée"},405);
- if(u.pathname==="/"||u.pathname==="/dashboard")return new Response(DASHBOARD_HTML,{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store"}});
+ if(u.pathname==="/wallet")return new Response(WALLET_HTML,{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store"}});
+ if(u.pathname==="/"||u.pathname==="/dashboard")return new Response(DASHBOARD_HTML.replace("</header>","<a href=\"/wallet\" style=\"margin-left:auto;color:#20e6a1;font-size:11px;font-weight:800;text-decoration:none\">WALLET ↗</a></header>"),{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store"}});
  if(u.pathname==="/ws/orderbook"){
   const id=(u.searchParams.get("exchange")||"").toLowerCase(),symbol=(u.searchParams.get("symbol")||"").trim();
   if(!allowed.has(id))return json({ok:false,error:"Exchange non pris en charge par CCXT"},400);
