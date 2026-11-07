@@ -6,6 +6,6 @@
     "start": "bun run index.ts"
   },
   "dependencies": {
-    "ccxt": "latest"
+    "ccxt": "4.5.92"
   }
 }
