@@ -54,12 +54,12 @@ const marketSymbols=["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","DOGEUSDT
 const marketNames={"GC=F":"OR","SI=F":"ARGENT","CL=F":"PÉTROLE","^GSPC":"S&P 500","^IXIC":"NASDAQ"};
 const marketExchange=s=>s.endsWith("USDT")?"binance":"yahoo";
 const marketPair=s=>s.endsWith("USDT")?s.replace("USDT","/USDT"):s;
-function marketCard(s){return '<div class="market" id="market-'+esc(s)+'"><div class="agentline"><b>'+esc(marketNames[s]||s)+'</b><small>CHARGEMENT</small></div><svg class="market-spark" viewBox="0 0 100 30"><polyline points="0,15 100,15"></polyline></svg><small>Cours réel en cours de chargement</small></div>';}
+function marketCard(s){return '<div class="market" id="market-'+esc(s)+'"><div class="agentline"><b>'+esc(marketNames[s]||s)+'</b><small>CHARGEMENT</small></div><svg class="market-spark" viewBox="0 0 100 30"></svg><small>Chargement des données réelles…</small></div>';}
 async function loadAllMarketCharts(){
  const grid=$("markets");if(!grid.querySelector("#market-BTCUSDT"))grid.innerHTML=marketSymbols.map(marketCard).join("");
  $("marketCount").textContent="19 marchés";
  for(let i=0;i<marketSymbols.length;i+=4){await Promise.allSettled(marketSymbols.slice(i,i+4).map(async symbol=>{
-  const ex=marketExchange(symbol),pair=marketPair(symbol),url=HUB+"/ohlcv?exchange="+ex+"&symbol="+encodeURIComponent(pair)+"&timeframe=1h&limit=60";
+  const ex=marketExchange(symbol),pair=marketPair(symbol),url=HUB+"/ohlcv?exchange="+ex+"&symbol="+encodeURIComponent(pair)+"&timeframe=5m&limit=60";
   const r=await fetch(url,{cache:"no-store"});const d=await r.json();if(!r.ok||!d.ok||!Array.isArray(d.candles)||d.candles.length<2)throw new Error(d.error||"Données indisponibles");
   const vals=d.candles.map(v=>Number(v[4])).filter(v=>Number.isFinite(v)&&v>0);if(vals.length<2)throw new Error("Série insuffisante");
   const card=$("market-"+symbol);if(!card)return;const lo=Math.min(...vals),hi=Math.max(...vals),span=hi-lo||Math.max(Math.abs(hi)*.0001,1),points=vals.map((v,i)=>(i/(vals.length-1)*100).toFixed(1)+","+(26-(v-lo)/span*22).toFixed(1)).join(" ");
