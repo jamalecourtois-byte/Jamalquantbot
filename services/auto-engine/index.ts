@@ -17,7 +17,9 @@ await db`CREATE INDEX IF NOT EXISTS paper_auto_positions_user_idx ON paper_auto_
 await db`CREATE INDEX IF NOT EXISTS paper_auto_trades_user_created_idx ON paper_auto_trades(telegram_user_id,created_at DESC)`;
 await db`CREATE TABLE IF NOT EXISTS testnet_auto_accounts (telegram_user_id BIGINT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'STOPPED', starting_usdt NUMERIC(24,8) NOT NULL DEFAULT 0, last_scan_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
 await db`CREATE TABLE IF NOT EXISTS testnet_auto_positions (telegram_user_id BIGINT NOT NULL REFERENCES testnet_auto_accounts(telegram_user_id) ON DELETE CASCADE, symbol TEXT NOT NULL, quantity NUMERIC(30,12) NOT NULL, entry_price NUMERIC(24,10) NOT NULL, stop_price NUMERIC(24,10) NOT NULL, target_price NUMERIC(24,10) NOT NULL, highest_price NUMERIC(24,10) NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(telegram_user_id,symbol))`;
-await db`CREATE TABLE IF NOT EXISTS testnet_auto_orders (id BIGSERIAL PRIMARY KEY, telegram_user_id BIGINT NOT NULL, client_order_id TEXT NOT NULL UNIQUE, exchange_order_id TEXT, symbol TEXT NOT NULL, side TEXT NOT NULL, quantity NUMERIC(30,12) NOT NULL DEFAULT 0, filled NUMERIC(30,12) NOT NULL DEFAULT 0, average NUMERIC(24,10) NOT NULL DEFAULT 0, cost NUMERIC(24,8) NOT NULL DEFAULT 0, status TEXT NOT NULL, reason TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
+await db`CREATE TABLE IF NOT EXISTS testnet_auto_orders (id BIGSERIAL PRIMARY KEY, telegram_user_id BIGINT NOT NULL, client_order_id TEXT NOT NULL UNIQUE, exchange_order_id TEXT, symbol TEXT NOT NULL, side TEXT NOT NULL, quantity NUMERIC(30,12) NOT NULL DEFAULT 0, filled NUMERIC(30,12) NOT NULL DEFAULT 0, average NUMERIC(24,10) NOT NULL DEFAULT 0, cost NUMERIC(24,8) NOT NULL DEFAULT 0, status TEXT NOT NULL, reason TEXT NOT NULL, requested_amount NUMERIC(30,12) NOT NULL DEFAULT 0, candle_time BIGINT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
+await db`ALTER TABLE testnet_auto_orders ADD COLUMN IF NOT EXISTS requested_amount NUMERIC(30,12) NOT NULL DEFAULT 0`;
+await db`ALTER TABLE testnet_auto_orders ADD COLUMN IF NOT EXISTS candle_time BIGINT NOT NULL DEFAULT 0`;
 await db`CREATE INDEX IF NOT EXISTS testnet_auto_orders_user_created_idx ON testnet_auto_orders(telegram_user_id,created_at DESC)`;
 await db`CREATE TABLE IF NOT EXISTS testnet_auto_cooldowns (telegram_user_id BIGINT NOT NULL, symbol TEXT NOT NULL, cooldown_until TIMESTAMPTZ NOT NULL, PRIMARY KEY(telegram_user_id,symbol))`;
 
@@ -139,10 +141,9 @@ async function testnetOrder(uid:number,symbol:string,side:"buy"|"sell",amount:nu
  const digest=await crypto.subtle.digest("SHA-256",new TextEncoder().encode([uid,symbol,side,candleTime].join(":")));
  const clientOrderId="JQ"+[...new Uint8Array(digest)].slice(0,16).map(x=>x.toString(16).padStart(2,"0")).join("");
  const existing=await db`SELECT * FROM testnet_auto_orders WHERE client_order_id=${clientOrderId}`;
- if(existing.length)return existing[0];
  const payload=side==="buy"?{symbol:normalized,side,quoteAmount:amount,clientOrderId}:{symbol:normalized,side,baseAmount:amount,clientOrderId};
  const result=await testnetRequest("/private/test-order",payload),o=result.order||{};
- await db`INSERT INTO testnet_auto_orders(telegram_user_id,client_order_id,exchange_order_id,symbol,side,quantity,filled,average,cost,status,reason) VALUES(${uid},${clientOrderId},${String(o.id||"")},${normalized},${side.toUpperCase()},${Number(o.amount||0)},${Number(o.filled||0)},${Number(o.average||0)},${Number(o.cost||0)},${String(o.status||"submitted")},${reason}) ON CONFLICT(client_order_id) DO NOTHING`;
+ await db`INSERT INTO testnet_auto_orders(telegram_user_id,client_order_id,exchange_order_id,symbol,side,quantity,filled,average,cost,status,reason,requested_amount,candle_time) VALUES(${uid},${clientOrderId},${String(o.id||"")},${normalized},${side.toUpperCase()},${Number(o.amount||0)},${Number(o.filled||0)},${Number(o.average||0)},${Number(o.cost||0)},${String(o.status||"submitted")},${reason},${amount},${candleTime}) ON CONFLICT(client_order_id) DO UPDATE SET exchange_order_id=EXCLUDED.exchange_order_id,quantity=EXCLUDED.quantity,filled=EXCLUDED.filled,average=EXCLUDED.average,cost=EXCLUDED.cost,status=EXCLUDED.status`;
  return {clientOrderId,...o};
 }
 async function scanTestnetAccount(account:any){
@@ -156,6 +157,22 @@ async function scanTestnetAccount(account:any){
    const signal=vote.bullishVotes>=12&&rv<70&&vol>0;
    agentState.set(m.symbol,{symbol:m.symbol,type:"crypto",price:m.price,ema20:e20,ema50:e50,rsi:rv,trend:e20>e50?"HAUSSIER":"BAISSIER",signal,score:vote.bullishVotes,agentCount:vote.totalAgents,agentVotes:vote.agentVotes,state:"TESTNET · "+(signal?"SIGNAL ACHAT":"ANALYSÉ · ATTENTE"),changePct:(m.price/cs[0].c-1)*100,spark:cs.slice(-40).map((x:any)=>x.c),chartCandles:cs.slice(-60).map((x:any)=>({t:x.t,o:x.o,h:x.h,l:x.l,c:x.c})),updatedAt:Date.now()});
    scanned++;
+   const pendingRows=await db`SELECT * FROM testnet_auto_orders WHERE telegram_user_id=${uid} AND symbol=${m.symbol.replace(/USDT$/,"/USDT")} AND status NOT IN ('closed','filled','canceled','rejected') ORDER BY created_at DESC LIMIT 1`;
+   if(pendingRows.length){
+    const po=pendingRows[0],side=String(po.side).toLowerCase()==="buy"?"buy":"sell";
+    const refreshed=await testnetOrder(uid,m.symbol,side,Number(po.requested_amount),String(po.reason),Number(po.candle_time));
+    const filled=Number(refreshed.filled||0),average=Number(refreshed.average||0),status=String(refreshed.status||"").toLowerCase();
+    if(filled>0&&average>0&&["closed","filled"].includes(status)){
+     if(side==="buy"){
+      const distance=vol*1.5;
+      await db`INSERT INTO testnet_auto_positions(telegram_user_id,symbol,quantity,entry_price,stop_price,target_price,highest_price) VALUES(${uid},${m.symbol},${filled},${average},${average-distance},${average+distance*2},${average}) ON CONFLICT(telegram_user_id,symbol) DO NOTHING`;
+     }else{
+      await db`DELETE FROM testnet_auto_positions WHERE telegram_user_id=${uid} AND symbol=${m.symbol}`;
+      await db`INSERT INTO testnet_auto_cooldowns(telegram_user_id,symbol,cooldown_until) VALUES(${uid},${m.symbol},NOW()+INTERVAL '5 minutes') ON CONFLICT(telegram_user_id,symbol) DO UPDATE SET cooldown_until=EXCLUDED.cooldown_until`;
+     }
+    }
+    continue;
+   }
    const posRows=await db`SELECT * FROM testnet_auto_positions WHERE telegram_user_id=${uid} AND symbol=${m.symbol}`;
    if(posRows.length){
     const p=posRows[0],high=Math.max(Number(p.highest_price),m.price),exit=m.price<=Number(p.stop_price)||m.price>=Number(p.target_price)||e20<e50||rv<45;
