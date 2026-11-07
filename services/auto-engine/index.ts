@@ -7,6 +7,8 @@ await db`ALTER TABLE paper_auto_portfolios ADD COLUMN IF NOT EXISTS last_scan_at
 await db`CREATE TABLE IF NOT EXISTS paper_auto_positions (telegram_user_id BIGINT NOT NULL REFERENCES paper_auto_portfolios(telegram_user_id) ON DELETE CASCADE,symbol TEXT NOT NULL,market_type TEXT NOT NULL,quantity NUMERIC(30,12) NOT NULL,entry_price NUMERIC(24,10) NOT NULL,entry_fee NUMERIC(24,8) NOT NULL,mark_price NUMERIC(24,10) NOT NULL,stop_price NUMERIC(24,10) NOT NULL,target_price NUMERIC(24,10) NOT NULL,highest_price NUMERIC(24,10) NOT NULL,initial_risk NUMERIC(24,10) NOT NULL,last_candle_time BIGINT NOT NULL,cooldown_until TIMESTAMPTZ,updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),PRIMARY KEY(telegram_user_id,symbol))`;
 await db`CREATE TABLE IF NOT EXISTS paper_auto_trades (id BIGSERIAL PRIMARY KEY,telegram_user_id BIGINT NOT NULL,symbol TEXT NOT NULL,market_type TEXT NOT NULL,side TEXT NOT NULL,quantity NUMERIC(30,12) NOT NULL,price NUMERIC(24,10) NOT NULL,fee NUMERIC(24,8) NOT NULL,pnl NUMERIC(24,8),reason TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
 await db`CREATE TABLE IF NOT EXISTS paper_auto_cooldowns (telegram_user_id BIGINT NOT NULL,symbol TEXT NOT NULL,cooldown_until TIMESTAMPTZ NOT NULL,PRIMARY KEY(telegram_user_id,symbol))`;
+await db`CREATE TABLE IF NOT EXISTS paper_auto_equity_history (id BIGSERIAL PRIMARY KEY,telegram_user_id BIGINT NOT NULL,session_started_at TIMESTAMPTZ NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),equity NUMERIC(24,8) NOT NULL,pnl NUMERIC(24,8) NOT NULL)`;
+await db`CREATE INDEX IF NOT EXISTS paper_auto_equity_history_user_created_idx ON paper_auto_equity_history(telegram_user_id,created_at DESC)`;
 await db`CREATE INDEX IF NOT EXISTS paper_auto_positions_user_idx ON paper_auto_positions(telegram_user_id)`;
 await db`CREATE INDEX IF NOT EXISTS paper_auto_trades_user_created_idx ON paper_auto_trades(telegram_user_id,created_at DESC)`;
 const fmt=(n:number)=>Number(n||0).toLocaleString("fr-FR",{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -98,6 +100,8 @@ async function cycle(){
     if(account.last_scan_at&&Date.now()-new Date(account.last_scan_at).getTime()<55000&&positions.length===0)continue;
     const result=await scanPortfolio(account,positions);
     await db`UPDATE paper_auto_portfolios SET updated_at=NOW(),last_scan_at=NOW() WHERE telegram_user_id=${account.telegram_user_id} AND status='RUNNING'`;
+    const snapshot=await db`SELECT p.cash+COALESCE(SUM(pos.quantity*pos.mark_price),0) AS equity FROM paper_auto_portfolios p LEFT JOIN paper_auto_positions pos ON pos.telegram_user_id=p.telegram_user_id WHERE p.telegram_user_id=${account.telegram_user_id} AND p.status='RUNNING' GROUP BY p.telegram_user_id,p.cash`;
+    if(snapshot.length){const equity=Number(snapshot[0].equity),pnl=equity-Number(account.initial_capital);await db`INSERT INTO paper_auto_equity_history(telegram_user_id,session_started_at,equity,pnl) SELECT ${account.telegram_user_id},created_at,${equity},${pnl} FROM paper_auto_portfolios WHERE telegram_user_id=${account.telegram_user_id}`;}
     console.log("Multi-market scan",account.telegram_user_id,JSON.stringify(result));
    }catch(err){console.error("Portfolio cycle error",account.telegram_user_id,err instanceof Error?err.message:String(err));}
   }
@@ -115,16 +119,18 @@ async function handle(req:Request){
   const existing=await db`SELECT * FROM paper_auto_portfolios WHERE telegram_user_id=${userId}`;
   if(existing.length&&existing[0].status==="RUNNING")return Response.json({ok:true,alreadyRunning:true,capital:Number(existing[0].initial_capital),cash:Number(existing[0].cash),universe:universe.length});
   await db`INSERT INTO paper_auto_portfolios(telegram_user_id,initial_capital,cash,realized_pnl,status,updated_at) VALUES(${userId},${capital},${capital},0,'RUNNING',NOW()) ON CONFLICT(telegram_user_id) DO UPDATE SET initial_capital=EXCLUDED.initial_capital,cash=EXCLUDED.cash,realized_pnl=0,status='RUNNING',updated_at=NOW()`;
+  await db`DELETE FROM paper_auto_equity_history WHERE telegram_user_id=${userId}`;
+  await db`INSERT INTO paper_auto_equity_history(telegram_user_id,session_started_at,equity,pnl) VALUES(${userId},NOW(),${capital},0)`;
   void cycle().catch(err=>console.error('Initial multi-market scan failed',err instanceof Error?err.message:String(err)));
   await telegram("🚀 JAMALQUANT MULTI-MARCHÉS ACTIVÉ\nCapital fictif : "+fmt(capital)+" USD\nUnivers : "+universe.length+" marchés (crypto, forex, matières premières, indices, actions)\nScan automatique toutes les ~60 secondes.\nMode simulation : aucun ordre réel, aucun gain garanti.",userId);
   return Response.json({ok:true,alreadyRunning:false,capital,universe:universe.length,markets:universe.map(x=>x.symbol),scanStarted:true});
  }
  if(url.pathname==="/status"){
   const rows=await db`SELECT * FROM paper_auto_portfolios WHERE telegram_user_id=${userId}`;if(!rows.length)return Response.json({error:"Aucun portefeuille"},{status:404});
-  const a=rows[0],positions=await db`SELECT * FROM paper_auto_positions WHERE telegram_user_id=${userId} ORDER BY updated_at DESC`,trades=await db`SELECT symbol,side,quantity,price,fee,pnl,reason,created_at FROM paper_auto_trades WHERE telegram_user_id=${userId} ORDER BY created_at DESC LIMIT 20`;
+  const a=rows[0],positions=await db`SELECT * FROM paper_auto_positions WHERE telegram_user_id=${userId} ORDER BY updated_at DESC`,trades=await db`SELECT symbol,side,quantity,price,fee,pnl,reason,created_at FROM paper_auto_trades WHERE telegram_user_id=${userId} ORDER BY created_at DESC LIMIT 20`,historyRows=await db`SELECT created_at,equity,pnl FROM paper_auto_equity_history WHERE telegram_user_id=${userId} ORDER BY created_at DESC LIMIT 240`;
   let unrealized=0;for(const x of positions)unrealized+=(Number(x.mark_price)-Number(x.entry_price))*Number(x.quantity)-Number(x.entry_fee);
   const equity=Number(a.cash)+positions.reduce((s:number,x:any)=>s+Number(x.quantity)*Number(x.mark_price),0);
-  return Response.json({ok:true,status:a.status,capital:Number(a.initial_capital),cash:Number(a.cash),realized:Number(a.realized_pnl),unrealized,equity,pnl:equity-Number(a.initial_capital),openPositions:positions.length,positions:positions.map((x:any)=>({symbol:x.symbol,marketType:x.market_type,quantity:Number(x.quantity),entry:Number(x.entry_price),price:Number(x.mark_price),stop:Number(x.stop_price),target:Number(x.target_price)})),trades,universe:universe.length,markets:universe.map(x=>x.symbol)});
+  return Response.json({ok:true,status:a.status,capital:Number(a.initial_capital),cash:Number(a.cash),realized:Number(a.realized_pnl),unrealized,equity,pnl:equity-Number(a.initial_capital),equityHistory:historyRows.reverse().map((x:any)=>({time:new Date(x.created_at).getTime(),value:Number(x.pnl),equity:Number(x.equity)})),openPositions:positions.length,positions:positions.map((x:any)=>({symbol:x.symbol,marketType:x.market_type,quantity:Number(x.quantity),entry:Number(x.entry_price),price:Number(x.mark_price),stop:Number(x.stop_price),target:Number(x.target_price)})),trades,universe:universe.length,markets:universe.map(x=>x.symbol)});
  }
  if(url.pathname==="/stop"){
   const a=await db`SELECT * FROM paper_auto_portfolios WHERE telegram_user_id=${userId} AND status='RUNNING'`;if(!a.length)return Response.json({error:"Aucun portefeuille actif"},{status:404});
