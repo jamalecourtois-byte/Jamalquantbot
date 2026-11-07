@@ -58,14 +58,25 @@ function marketCard(s){return '<div class="market" id="market-'+esc(s)+'"><div c
 async function loadAllMarketCharts(){
  const grid=$("markets");if(!grid.querySelector("#market-BTCUSDT"))grid.innerHTML=marketSymbols.map(marketCard).join("");
  $("marketCount").textContent="19 marchés";
+ let loaded=0,failed=0;
  for(let i=0;i<marketSymbols.length;i+=4){await Promise.allSettled(marketSymbols.slice(i,i+4).map(async symbol=>{
-  const ex=marketExchange(symbol),pair=marketPair(symbol),url=HUB+"/ohlcv?exchange="+ex+"&symbol="+encodeURIComponent(pair)+"&timeframe=5m&limit=60";
-  const r=await fetch(url,{cache:"no-store"});const d=await r.json();if(!r.ok||!d.ok||!Array.isArray(d.candles)||d.candles.length<2)throw new Error(d.error||"Données indisponibles");
-  const vals=d.candles.map(v=>Number(v[4])).filter(v=>Number.isFinite(v)&&v>0);if(vals.length<2)throw new Error("Série insuffisante");
+  const ex=marketExchange(symbol),pair=marketPair(symbol),base=HUB+"/ohlcv?exchange="+ex+"&symbol="+encodeURIComponent(pair)+"&timeframe=5m&limit=60";
+  const [candleResponse,tickerResponse]=await Promise.all([
+   fetch(base,{cache:"no-store",signal:AbortSignal.timeout(12000)}),
+   fetch(HUB+"/ticker?exchange="+ex+"&symbol="+encodeURIComponent(pair)+"&timeframe=5m",{cache:"no-store",signal:AbortSignal.timeout(12000)})
+  ]);
+  const d=await candleResponse.json();const ticker=await tickerResponse.json().catch(()=>({}));
+  if(!candleResponse.ok||!d.ok||!Array.isArray(d.candles)||d.candles.length<2)throw new Error(d.error||"Historique indisponible");
+  const vals=d.candles.map(v=>Number(v[4])).filter(v=>Number.isFinite(v)&&v>0);
+  const live=Number(ticker.last);if(Number.isFinite(live)&&live>0)vals.push(live);
+  if(vals.length<2)throw new Error("Série insuffisante");
   const card=$("market-"+symbol);if(!card)return;const lo=Math.min(...vals),hi=Math.max(...vals),span=hi-lo||Math.max(Math.abs(hi)*.0001,1),points=vals.map((v,i)=>(i/(vals.length-1)*100).toFixed(1)+","+(26-(v-lo)/span*22).toFixed(1)).join(" ");
-  card.querySelector(".market-spark").innerHTML='<polyline points="'+points+'"></polyline>';card.querySelector(".agentline small").textContent="COURS LIVE";card.querySelector("small:last-child").textContent=money(vals.at(-1))+" · "+vals.length+" points · "+(d.source||"données marché");
- })).then(results=>{results.forEach((r,j)=>{if(r.status==="rejected"){const symbol=marketSymbols[i+j],card=$("market-"+symbol);if(card){card.querySelector(".agentline small").textContent="INDISPONIBLE";card.querySelector("small:last-child").textContent="Source marché indisponible";}}});});}
- $("marketStatus").textContent="19 marchés chargés depuis les fournisseurs de données. Courbes réelles, actualisées périodiquement.";
+  card.querySelector(".market-spark").innerHTML='<polyline points="'+points+'"></polyline>';
+  card.querySelector(".agentline small").textContent=Number.isFinite(live)&&live>0?"COURS LIVE":"DERNIÈRE BOUGIE";
+  card.querySelector("small:last-child").textContent=money(Number.isFinite(live)&&live>0?live:vals.at(-1))+" · "+(d.count||vals.length)+" bougies · "+(ticker.source||d.source||"données marché");
+  loaded++;
+ })).then(results=>{results.forEach((r,j)=>{if(r.status==="rejected"){failed++;const symbol=marketSymbols[i+j],card=$("market-"+symbol);if(card){card.querySelector(".agentline small").textContent="INDISPONIBLE";card.querySelector("small:last-child").textContent=String(r.reason?.message||"Source marché indisponible").slice(0,100);}}});});}
+ $("marketStatus").textContent=loaded+" marchés actualisés avec cours réels"+(failed?" · "+failed+" indisponibles":"")+" · dernière mise à jour "+new Date().toLocaleTimeString("fr-FR");
 }
 async function loadMarketPreview(){await loadAllMarketCharts();}
 function loadMarketChart(){chart();}
