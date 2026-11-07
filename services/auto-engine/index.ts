@@ -15,6 +15,11 @@ await db`CREATE TABLE IF NOT EXISTS paper_auto_equity_history (id BIGSERIAL PRIM
 await db`CREATE INDEX IF NOT EXISTS paper_auto_equity_history_user_created_idx ON paper_auto_equity_history(telegram_user_id,created_at DESC)`;
 await db`CREATE INDEX IF NOT EXISTS paper_auto_positions_user_idx ON paper_auto_positions(telegram_user_id)`;
 await db`CREATE INDEX IF NOT EXISTS paper_auto_trades_user_created_idx ON paper_auto_trades(telegram_user_id,created_at DESC)`;
+await db`CREATE TABLE IF NOT EXISTS testnet_auto_accounts (telegram_user_id BIGINT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'STOPPED', starting_usdt NUMERIC(24,8) NOT NULL DEFAULT 0, last_scan_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
+await db`CREATE TABLE IF NOT EXISTS testnet_auto_positions (telegram_user_id BIGINT NOT NULL REFERENCES testnet_auto_accounts(telegram_user_id) ON DELETE CASCADE, symbol TEXT NOT NULL, quantity NUMERIC(30,12) NOT NULL, entry_price NUMERIC(24,10) NOT NULL, stop_price NUMERIC(24,10) NOT NULL, target_price NUMERIC(24,10) NOT NULL, highest_price NUMERIC(24,10) NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(telegram_user_id,symbol))`;
+await db`CREATE TABLE IF NOT EXISTS testnet_auto_orders (id BIGSERIAL PRIMARY KEY, telegram_user_id BIGINT NOT NULL, client_order_id TEXT NOT NULL UNIQUE, exchange_order_id TEXT, symbol TEXT NOT NULL, side TEXT NOT NULL, quantity NUMERIC(30,12) NOT NULL DEFAULT 0, filled NUMERIC(30,12) NOT NULL DEFAULT 0, average NUMERIC(24,10) NOT NULL DEFAULT 0, cost NUMERIC(24,8) NOT NULL DEFAULT 0, status TEXT NOT NULL, reason TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
+await db`CREATE INDEX IF NOT EXISTS testnet_auto_orders_user_created_idx ON testnet_auto_orders(telegram_user_id,created_at DESC)`;
+
 const fmt=(n:number)=>Number(n||0).toLocaleString("fr-FR",{minimumFractionDigits:2,maximumFractionDigits:2});
 const universe=[{symbol:"BTCUSDT",type:"crypto"},{symbol:"ETHUSDT",type:"crypto"},{symbol:"SOLUSDT",type:"crypto"},{symbol:"BNBUSDT",type:"crypto"},{symbol:"XRPUSDT",type:"crypto"},{symbol:"DOGEUSDT",type:"crypto"},{symbol:"LINKUSDT",type:"crypto"},{symbol:"AVAXUSDT",type:"crypto"},{symbol:"EURUSD=X",type:"forex"},{symbol:"GBPUSD=X",type:"forex"},{symbol:"GC=F",type:"commodity"},{symbol:"SI=F",type:"commodity"},{symbol:"CL=F",type:"commodity"},{symbol:"^GSPC",type:"index"},{symbol:"^IXIC",type:"index"},{symbol:"AAPL",type:"stock"},{symbol:"MSFT",type:"stock"},{symbol:"NVDA",type:"stock"},{symbol:"AMZN",type:"stock"}];
 const MIN_CAPITAL=100,MAX_CAPITAL=1000000;
@@ -119,6 +124,85 @@ async function scanPortfolio(account:any,positions:any[]){
  }
  return {scanned:results.length,errors,markets:results.map(x=>x.symbol)};
 }
+
+async function testnetRequest(path:string,payload:any){
+ const hub=String(env.EXCHANGE_HUB_URL||"").replace(/\/$/,""),token=String(env.CONNECTOR_ADMIN_TOKEN||"");
+ if(!hub||token.length<32)throw new Error("Connecteur Testnet non configuré côté moteur.");
+ const response=await fetch(hub+path,{method:"POST",headers:{"content-type":"application/json","authorization":"Bearer "+token},body:JSON.stringify(payload),signal:AbortSignal.timeout(20000)});
+ const data:any=await response.json().catch(()=>({}));
+ if(!response.ok||data.ok===false)throw new Error(data.error||"Connecteur Binance Testnet indisponible (HTTP "+response.status+").");
+ return data;
+}
+async function testnetOrder(uid:number,symbol:string,side:"buy"|"sell",amount:number,reason:string,candleTime:number){
+ const normalized=symbol.replace(/USDT$/,"/USDT");
+ const digest=await crypto.subtle.digest("SHA-256",new TextEncoder().encode([uid,symbol,side,candleTime].join(":")));
+ const clientOrderId="JQ"+[...new Uint8Array(digest)].slice(0,16).map(x=>x.toString(16).padStart(2,"0")).join("");
+ const existing=await db`SELECT * FROM testnet_auto_orders WHERE client_order_id=${clientOrderId}`;
+ if(existing.length)return existing[0];
+ const payload=side==="buy"?{symbol:normalized,side,quoteAmount:amount,clientOrderId}:{symbol:normalized,side,baseAmount:amount,clientOrderId};
+ const result=await testnetRequest("/private/test-order",payload),o=result.order||{};
+ await db`INSERT INTO testnet_auto_orders(telegram_user_id,client_order_id,exchange_order_id,symbol,side,quantity,filled,average,cost,status,reason) VALUES(${uid},${clientOrderId},${String(o.id||"")},${normalized},${side.toUpperCase()},${Number(o.amount||0)},${Number(o.filled||0)},${Number(o.average||0)},${Number(o.cost||0)},${String(o.status||"submitted")},${reason}) ON CONFLICT(client_order_id) DO NOTHING`;
+ return {clientOrderId,...o};
+}
+async function scanTestnetAccount(account:any){
+ const uid=Number(account.telegram_user_id);
+ const cryptoMarkets=universe.filter(x=>x.type==="crypto");
+ let scanned=0,errors=0,orders=0;
+ for(const item of cryptoMarkets){
+  try{
+   const m=await getMarket(item),cs=m.candles,closes=cs.map((x:any)=>x.c),e20=ema(closes,20),e50=ema(closes,50),rv=rsi(closes),vol=atr(cs),last=cs[cs.length-1],prev=cs[cs.length-2];
+   const vote=evaluateAgents(cs,closes,e20,e50,rv,vol,last,prev,m.price);
+   const signal=vote.bullishVotes>=12&&rv<70&&vol>0;
+   agentState.set(m.symbol,{symbol:m.symbol,type:"crypto",price:m.price,ema20:e20,ema50:e50,rsi:rv,trend:e20>e50?"HAUSSIER":"BAISSIER",signal,score:vote.bullishVotes,agentCount:vote.totalAgents,agentVotes:vote.agentVotes,state:"TESTNET · "+(signal?"SIGNAL ACHAT":"ANALYSÉ · ATTENTE"),changePct:(m.price/cs[0].c-1)*100,spark:cs.slice(-40).map((x:any)=>x.c),chartCandles:cs.slice(-60).map((x:any)=>({t:x.t,o:x.o,h:x.h,l:x.l,c:x.c})),updatedAt:Date.now()});
+   scanned++;
+   const posRows=await db`SELECT * FROM testnet_auto_positions WHERE telegram_user_id=${uid} AND symbol=${m.symbol}`;
+   if(posRows.length){
+    const p=posRows[0],high=Math.max(Number(p.highest_price),m.price),exit=m.price<=Number(p.stop_price)||m.price>=Number(p.target_price)||e20<e50||rv<45;
+    await db`UPDATE testnet_auto_positions SET highest_price=${high},updated_at=NOW() WHERE telegram_user_id=${uid} AND symbol=${m.symbol}`;
+    if(exit){
+     const result=await testnetOrder(uid,m.symbol,"sell",Number(p.quantity),m.price<=Number(p.stop_price)?"STOP_LOSS":m.price>=Number(p.target_price)?"TAKE_PROFIT":"SIGNAL_INVALIDATED",last.t);
+     const filled=Number(result.filled||0),average=Number(result.average||m.price);
+     if(filled>0&&["closed","filled"].includes(String(result.status||"").toLowerCase())){
+      await db`DELETE FROM testnet_auto_positions WHERE telegram_user_id=${uid} AND symbol=${m.symbol}`;
+      orders++;
+      void telegram("🔴 JAMALQUANT · VENTE TESTNET\n"+m.symbol+"\nQuantité exécutée : "+fmt(filled)+"\nPrix moyen : "+fmt(average)+"\nStatut : "+String(result.status),uid).catch(()=>{});
+     }
+    }
+    continue;
+   }
+   if(!signal)continue;
+   const running=await db`SELECT status FROM testnet_auto_accounts WHERE telegram_user_id=${uid}`;
+   if(!running.length||running[0].status!=="RUNNING")return {scanned,errors,orders,stopped:true};
+   const count=await db`SELECT COUNT(*)::int AS n FROM testnet_auto_positions WHERE telegram_user_id=${uid}`;
+   if(Number(count[0]?.n||0)>=2)continue;
+   const accountData=await testnetRequest("/private/account",{exchange:"binance"});
+   if(accountData.environment!=="binance-spot-testnet")throw new Error("Environnement Binance non-Testnet : ordre bloqué.");
+   const usdt=Number((accountData.assets||[]).find((x:any)=>x.asset==="USDT")?.total||0);
+   const budget=Math.min(25,usdt*0.10);
+   if(budget<10)continue;
+   const result=await testnetOrder(uid,m.symbol,"buy",budget,"EMA_RSI_CONSENSUS",last.t);
+   const filled=Number(result.filled||0),average=Number(result.average||0),status=String(result.status||"").toLowerCase();
+   if(filled>0&&average>0&&["closed","filled"].includes(status)){
+    const distance=vol*1.5,stop=average-distance,target=average+distance*2;
+    await db`INSERT INTO testnet_auto_positions(telegram_user_id,symbol,quantity,entry_price,stop_price,target_price,highest_price) VALUES(${uid},${m.symbol},${filled},${average},${stop},${target},${average}) ON CONFLICT(telegram_user_id,symbol) DO NOTHING`;
+    orders++;
+    void telegram("🟢 JAMALQUANT · ACHAT TESTNET\n"+m.symbol+"\nQuantité exécutée : "+fmt(filled)+"\nPrix moyen : "+fmt(average)+"\nStop : "+fmt(stop)+"\nObjectif 2R : "+fmt(target)+"\nFonds fictifs Binance Testnet.",uid).catch(()=>{});
+   }
+  }catch(err){errors++;console.warn("Testnet scan failed",item.symbol,err instanceof Error?err.message:String(err));}
+ }
+ await db`UPDATE testnet_auto_accounts SET last_scan_at=NOW(),updated_at=NOW() WHERE telegram_user_id=${uid} AND status='RUNNING'`;
+ return {scanned,errors,orders};
+}
+async function testnetCycle(){
+ const accounts=await db`SELECT * FROM testnet_auto_accounts WHERE status='RUNNING' ORDER BY updated_at ASC`;
+ for(const account of accounts){
+  if(account.last_scan_at&&Date.now()-new Date(account.last_scan_at).getTime()<55000)continue;
+  try{const result=await scanTestnetAccount(account);console.log("Binance Spot Testnet scanner",account.telegram_user_id,JSON.stringify(result));}
+  catch(err){console.error("Testnet portfolio cycle failed",account.telegram_user_id,err instanceof Error?err.message:String(err));}
+ }
+ return {testnetAccounts:accounts.length};
+}
+
 async function cycle(){
  if(cycleBusy)return {busy:true};
  cycleBusy=true;
@@ -135,7 +219,8 @@ async function cycle(){
     console.log("Multi-market scan",account.telegram_user_id,JSON.stringify(result));
    }catch(err){console.error("Portfolio cycle error",account.telegram_user_id,err instanceof Error?err.message:String(err));}
   }
-  return {ok:true,portfolios:accounts.length,universe:universe.length};
+  const testnet=await testnetCycle();
+  return {ok:true,portfolios:accounts.length,universe:universe.length,...testnet};
  }finally{cycleBusy=false;}
 }
 async function handle(req:Request){
@@ -186,6 +271,29 @@ async function handle(req:Request){
   if((result as any).error)return Response.json({error:(result as any).error},{status:(result as any).error==="INSUFFICIENT_VIRTUAL_BALANCE"?409: (result as any).error==="LEDGER_NOT_FOUND"?404:423});
   return Response.json({ok:true,mode:"SANDBOX_ONLY",realFundsEnabled:false,...result});
  }
+
+ if(url.pathname==="/testnet/start"){
+  if(String(env.BINANCE_SPOT_TESTNET||"").toLowerCase()!=="true"||String(env.LIVE_TRADING_ENABLED||"").toLowerCase()==="true")return Response.json({error:"Mode Binance Spot Testnet non confirmé ou mode réel activé."},{status:403});
+  const account=await testnetRequest("/private/account",{exchange:"binance"});
+  if(account.environment!=="binance-spot-testnet"||account.accountConnected!==true)return Response.json({error:"Compte Binance Spot Testnet non vérifié."},{status:409});
+  const usdt=Number((account.assets||[]).find((x:any)=>x.asset==="USDT")?.total||0);
+  if(usdt<10)return Response.json({error:"Solde USDT Testnet inférieur à 10 USDT."},{status:409});
+  await db`INSERT INTO testnet_auto_accounts(telegram_user_id,status,starting_usdt,updated_at) VALUES(${userId},'RUNNING',${usdt},NOW()) ON CONFLICT(telegram_user_id) DO UPDATE SET status='RUNNING',starting_usdt=EXCLUDED.starting_usdt,last_scan_at=NULL,updated_at=NOW()`;
+  void testnetCycle().catch(err=>console.error("Initial Testnet scan failed",err instanceof Error?err.message:String(err)));
+  return Response.json({ok:true,mode:"BINANCE_SPOT_TESTNET",realTradingEnabled:false,startingUsdt:usdt,markets:universe.filter(x=>x.type==="crypto").map(x=>x.symbol),maxOrderUsdt:25,maxOpenPositions:2});
+ }
+ if(url.pathname==="/testnet/status"){
+  const rows=await db`SELECT * FROM testnet_auto_accounts WHERE telegram_user_id=${userId}`;
+  const positions=await db`SELECT * FROM testnet_auto_positions WHERE telegram_user_id=${userId} ORDER BY updated_at DESC`;
+  const orders=await db`SELECT symbol,side,quantity,filled,average,cost,status,reason,created_at FROM testnet_auto_orders WHERE telegram_user_id=${userId} ORDER BY created_at DESC LIMIT 30`;
+  let account:any=null;try{account=await testnetRequest("/private/account",{exchange:"binance"});}catch{}
+  return Response.json({ok:true,mode:"BINANCE_SPOT_TESTNET",status:rows[0]?.status||"STOPPED",environment:account?.environment||"unavailable",assets:account?.assets||[],positions,orders,lastScanAt:rows[0]?.last_scan_at||null,maxOrderUsdt:25});
+ }
+ if(url.pathname==="/testnet/stop"){
+  await db`UPDATE testnet_auto_accounts SET status='STOPPED',updated_at=NOW() WHERE telegram_user_id=${userId}`;
+  return Response.json({ok:true,stopped:true,openPositions:(await db`SELECT symbol,quantity FROM testnet_auto_positions WHERE telegram_user_id=${userId}`)});
+ }
+
  if(url.pathname==="/reset"){
   if(cycleBusy)return Response.json({error:"Un scan est en cours. Réessaie dans quelques secondes."},{status:409});
   await db.begin(async(tx:any)=>{
