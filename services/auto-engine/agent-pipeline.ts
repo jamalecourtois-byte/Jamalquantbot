@@ -22,6 +22,7 @@ const wordSets=[
  {up:["ceasefire","peace deal","de-escalation","supply restored","trade deal","truce","accord de paix","désescalade"],down:["war","attack","escalation","conflict","blockade","disruption","shortage","invasion","guerre","attaque","blocus"]},
  {up:["launch","product demand","revenue growth","market share","buyback","contract win","earnings beat","lancement","demande","contrat"],down:["recall","outage","data breach","earnings miss","guidance cut","layoffs","bankruptcy","rappel","panne","licenciement","faillite"]}
 ];
+export async function warmNews(items:Market[]){await Promise.all(items.map(item=>headlines(item)));}
 function sentiment(titles:string[],set:number){let score=0;for(const title of titles){const t=title.toLowerCase();for(const w of wordSets[set].up)if(t.includes(w))score++;for(const w of wordSets[set].down)if(t.includes(w))score--;}return clamp(score,-8,8);}
 function backtest(c:Candle[],variant:number){
  const closes=c.map(x=>x.c),outcomes:number[]=[];const first=Math.max(55,c.length-150),last=c.length-13;
