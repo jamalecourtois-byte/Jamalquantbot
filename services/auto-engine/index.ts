@@ -2,6 +2,10 @@ import postgres from "postgres@3.4.7";
 const env=Bun.env;
 if(!env.DATABASE_URL||!env.AUTO_ENGINE_SECRET)throw new Error("DATABASE_URL ou AUTO_ENGINE_SECRET manquant");
 const db=postgres(env.DATABASE_URL,{max:8,idle_timeout:20,connect_timeout:10});
+await db`CREATE TABLE IF NOT EXISTS sandbox_client_ledgers (telegram_user_id BIGINT PRIMARY KEY, currency TEXT NOT NULL DEFAULT 'USDT' CHECK(currency='USDT'), balance NUMERIC(24,8) NOT NULL DEFAULT 0 CHECK(balance>=0), total_credited NUMERIC(24,8) NOT NULL DEFAULT 0, total_debited NUMERIC(24,8) NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'OPEN' CHECK(status IN ('OPEN','FROZEN')), created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
+await db`CREATE TABLE IF NOT EXISTS sandbox_client_ledger_entries (id BIGSERIAL PRIMARY KEY, telegram_user_id BIGINT NOT NULL REFERENCES sandbox_client_ledgers(telegram_user_id), entry_type TEXT NOT NULL CHECK(entry_type IN ('OPENING_VIRTUAL','CREDIT_VIRTUAL','DEBIT_VIRTUAL','PAPER_PNL')), amount NUMERIC(24,8) NOT NULL CHECK(amount>0), balance_after NUMERIC(24,8) NOT NULL CHECK(balance_after>=0), reference TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(telegram_user_id,reference))`;
+await db`CREATE INDEX IF NOT EXISTS sandbox_ledger_entries_user_created_idx ON sandbox_client_ledger_entries(telegram_user_id,created_at DESC)`;
+
 await db`CREATE TABLE IF NOT EXISTS paper_auto_portfolios (telegram_user_id BIGINT PRIMARY KEY,initial_capital NUMERIC(24,8) NOT NULL,cash NUMERIC(24,8) NOT NULL,realized_pnl NUMERIC(24,8) NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'STOPPED',created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
 await db`ALTER TABLE paper_auto_portfolios ADD COLUMN IF NOT EXISTS last_scan_at TIMESTAMPTZ`;
 await db`CREATE TABLE IF NOT EXISTS paper_auto_positions (telegram_user_id BIGINT NOT NULL REFERENCES paper_auto_portfolios(telegram_user_id) ON DELETE CASCADE,symbol TEXT NOT NULL,market_type TEXT NOT NULL,quantity NUMERIC(30,12) NOT NULL,entry_price NUMERIC(24,10) NOT NULL,entry_fee NUMERIC(24,8) NOT NULL,mark_price NUMERIC(24,10) NOT NULL,stop_price NUMERIC(24,10) NOT NULL,target_price NUMERIC(24,10) NOT NULL,highest_price NUMERIC(24,10) NOT NULL,initial_risk NUMERIC(24,10) NOT NULL,last_candle_time BIGINT NOT NULL,cooldown_until TIMESTAMPTZ,updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),PRIMARY KEY(telegram_user_id,symbol))`;
@@ -140,6 +144,48 @@ async function handle(req:Request){
  if(req.headers.get("x-engine-secret")!==env.AUTO_ENGINE_SECRET)return new Response("Unauthorized",{status:401});
  let body:any={};try{body=await req.json();}catch{return new Response("Bad JSON",{status:400});}
  const userId=Number(body.userId);if(!Number.isSafeInteger(userId)||userId<=0)return Response.json({error:"Invalid userId"},{status:400});
+
+ // Comptabilité virtuelle isolée : aucune connexion Binance, aucun dépôt/retrait réel.
+ if(url.pathname==="/sandbox-ledger/status"&&req.method==="POST"){
+  const rows=await db`SELECT telegram_user_id,currency,balance,total_credited,total_debited,status,created_at,updated_at FROM sandbox_client_ledgers WHERE telegram_user_id=${userId}`;
+  const entries=await db`SELECT entry_type,amount,balance_after,reference,description,created_at FROM sandbox_client_ledger_entries WHERE telegram_user_id=${userId} ORDER BY created_at DESC LIMIT 100`;
+  return Response.json({ok:true,mode:"SANDBOX_ONLY",realFundsEnabled:false,account:rows[0]?{userId:Number(rows[0].telegram_user_id),currency:rows[0].currency,balance:Number(rows[0].balance),totalCredited:Number(rows[0].total_credited),totalDebited:Number(rows[0].total_debited),status:rows[0].status,createdAt:rows[0].created_at,updatedAt:rows[0].updated_at}:null,entries});
+ }
+ if(url.pathname==="/sandbox-ledger/open"&&req.method==="POST"){
+  const amount=Number(body.virtualStartingBalance);
+  if(!Number.isFinite(amount)||amount<=0||amount>1000000)return Response.json({error:"Solde virtuel invalide (0 à 1 000 000 USDT)."}, {status:400});
+  const reference=String(body.reference||"").trim();
+  if(!/^[A-Za-z0-9_-]{8,64}$/.test(reference))return Response.json({error:"Référence idempotente requise (8 à 64 caractères)."}, {status:400});
+  const result=await db.begin(async(tx:any)=>{
+   const existing=await tx`SELECT telegram_user_id,balance FROM sandbox_client_ledgers WHERE telegram_user_id=${userId} FOR UPDATE`;
+   if(existing.length)return {created:false,balance:Number(existing[0].balance)};
+   await tx`INSERT INTO sandbox_client_ledgers(telegram_user_id,balance,total_credited) VALUES(${userId},${amount},${amount})`;
+   await tx`INSERT INTO sandbox_client_ledger_entries(telegram_user_id,entry_type,amount,balance_after,reference,description) VALUES(${userId},'OPENING_VIRTUAL',${amount},${amount},${reference},'Solde initial fictif de test — aucun fonds reçu')`;
+   return {created:true,balance:amount};
+  });
+  return Response.json({ok:true,mode:"SANDBOX_ONLY",realFundsEnabled:false,...result});
+ }
+ if(url.pathname==="/sandbox-ledger/adjust"&&req.method==="POST"){
+  const amount=Number(body.amount),direction=String(body.direction||"");
+  const reference=String(body.reference||"").trim(),description=String(body.description||"").slice(0,240);
+  if(!Number.isFinite(amount)||amount<=0||amount>1000000)return Response.json({error:"Montant virtuel invalide."},{status:400});
+  if(direction!=="CREDIT"&&direction!=="DEBIT")return Response.json({error:"direction doit être CREDIT ou DEBIT."},{status:400});
+  if(!/^[A-Za-z0-9_-]{8,64}$/.test(reference))return Response.json({error:"Référence idempotente requise (8 à 64 caractères)."}, {status:400});
+  const result=await db.begin(async(tx:any)=>{
+   const duplicate=await tx`SELECT balance_after FROM sandbox_client_ledger_entries WHERE telegram_user_id=${userId} AND reference=${reference}`;
+   if(duplicate.length)return {duplicate:true,balance:Number(duplicate[0].balance_after)};
+   const accounts=await tx`SELECT balance,status FROM sandbox_client_ledgers WHERE telegram_user_id=${userId} FOR UPDATE`;
+   if(!accounts.length)throw new Error("LEDGER_NOT_FOUND");
+   if(accounts[0].status!=="OPEN")throw new Error("LEDGER_FROZEN");
+   const current=Number(accounts[0].balance),next=direction==="CREDIT"?current+amount:current-amount;
+   if(next<0)throw new Error("INSUFFICIENT_VIRTUAL_BALANCE");
+   await tx`UPDATE sandbox_client_ledgers SET balance=${next},total_credited=total_credited+${direction==="CREDIT"?amount:0},total_debited=total_debited+${direction==="DEBIT"?amount:0},updated_at=NOW() WHERE telegram_user_id=${userId}`;
+   await tx`INSERT INTO sandbox_client_ledger_entries(telegram_user_id,entry_type,amount,balance_after,reference,description) VALUES(${userId},${direction==="CREDIT"?"CREDIT_VIRTUAL":"DEBIT_VIRTUAL"},${amount},${next},${reference},${description||"Ajustement comptable virtuel"})`;
+   return {duplicate:false,balance:next};
+  }).catch((err:any)=>{if(String(err?.message).includes("INSUFFICIENT_VIRTUAL_BALANCE"))return {error:"INSUFFICIENT_VIRTUAL_BALANCE"};if(String(err?.message).includes("LEDGER_NOT_FOUND"))return {error:"LEDGER_NOT_FOUND"};if(String(err?.message).includes("LEDGER_FROZEN"))return {error:"LEDGER_FROZEN"};throw err;});
+  if((result as any).error)return Response.json({error:(result as any).error},{status:(result as any).error==="INSUFFICIENT_VIRTUAL_BALANCE"?409: (result as any).error==="LEDGER_NOT_FOUND"?404:423});
+  return Response.json({ok:true,mode:"SANDBOX_ONLY",realFundsEnabled:false,...result});
+ }
  if(url.pathname==="/reset"){
   if(cycleBusy)return Response.json({error:"Un scan est en cours. Réessaie dans quelques secondes."},{status:409});
   await db.begin(async(tx:any)=>{
