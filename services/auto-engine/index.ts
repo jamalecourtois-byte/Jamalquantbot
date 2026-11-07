@@ -1,4 +1,5 @@
 import postgres from "postgres@3.4.7";
+import { runAgentPipeline } from "./agent-pipeline.ts";
 const env=Bun.env;
 if(!env.DATABASE_URL||!env.AUTO_ENGINE_SECRET)throw new Error("DATABASE_URL ou AUTO_ENGINE_SECRET manquant");
 const db=postgres(env.DATABASE_URL,{max:8,idle_timeout:20,connect_timeout:10});
@@ -31,44 +32,27 @@ async function telegram(message:string,userId:number){if(!env.BOT_TOKEN)return;c
 async function getMarket(item:any){
  if(item.type==="crypto"){
   const pair=item.symbol;
-  const [pr,cr]=await Promise.all([fetch("https://data-api.binance.vision/api/v3/ticker/price?symbol="+pair,{signal:AbortSignal.timeout(8000)}),fetch("https://data-api.binance.vision/api/v3/klines?symbol="+pair+"&interval=5m&limit=100",{signal:AbortSignal.timeout(9000)})]);
+  const [pr,cr]=await Promise.all([fetch("https://data-api.binance.vision/api/v3/ticker/price?symbol="+pair,{signal:AbortSignal.timeout(8000)}),fetch("https://data-api.binance.vision/api/v3/klines?symbol="+pair+"&interval=5m&limit=200",{signal:AbortSignal.timeout(9000)})]);
   const pj:any=await pr.json(),rows:any=await cr.json();const price=Number(pj.price);
   if(!pr.ok||!cr.ok||!Number.isFinite(price)||!Array.isArray(rows))throw new Error("Binance data unavailable "+pair);
   const now=Date.now(),candles=rows.map((x:any[])=>({t:+x[0],end:+x[6],o:+x[1],h:+x[2],l:+x[3],c:+x[4]})).filter((x:any)=>[x.t,x.end,x.o,x.h,x.l,x.c].every(Number.isFinite)&&x.end<now-1000&&x.l>0&&x.h>=Math.max(x.o,x.c)&&x.l<=Math.min(x.o,x.c)&&x.h>=x.l);
-  if(candles.length<60||now-candles[candles.length-1].end>660000)throw new Error("Bougies 5m insuffisantes ou anciennes "+pair);
-  return { ...item,price,candles:candles.slice(-80),currency:"USDT",marketOpen:true,dataAgeMs:0 };
+  if(candles.length<120||now-candles[candles.length-1].end>660000)throw new Error("Bougies 5m insuffisantes ou anciennes "+pair);
+  return { ...item,price,candles:candles.slice(-160),currency:"USDT",marketOpen:true,dataAgeMs:0 };
  }
  const url=new URL("https://query1.finance.yahoo.com/v8/finance/chart/"+encodeURIComponent(item.symbol));
  url.searchParams.set("interval","5m");url.searchParams.set("range","5d");
  const r=await fetch(url,{headers:{"user-agent":"Mozilla/5.0"},signal:AbortSignal.timeout(10000)}),j:any=await r.json().catch(()=>null),z=j?.chart?.result?.[0],q=z?.indicators?.quote?.[0];
  if(!r.ok||!z||!q)throw new Error("Yahoo data unavailable "+item.symbol);
  const times=z.timestamp||[],now=Date.now(),candles=times.map((t:number,i:number)=>({t:t*1000,end:t*1000+300000,o:+q.open?.[i],h:+q.high?.[i],l:+q.low?.[i],c:+q.close?.[i]})).filter((x:any)=>[x.t,x.end,x.o,x.h,x.l,x.c].every(Number.isFinite)&&x.end<now-1000&&x.l>0&&x.h>=Math.max(x.o,x.c)&&x.l<=Math.min(x.o,x.c)&&x.h>=x.l);
- if(candles.length<60)throw new Error("Pas assez de bougies Yahoo "+item.symbol);
+ if(candles.length<120)throw new Error("Pas assez de bougies Yahoo "+item.symbol);
  const dataAgeMs=Math.max(0,now-candles[candles.length-1].end),marketOpen=dataAgeMs<=20*60*1000;
  const price=Number(z.meta?.regularMarketPrice||candles[candles.length-1].c);
  if(!Number.isFinite(price)||price<=0)throw new Error("Prix Yahoo invalide "+item.symbol);
- return {...item,price,candles:candles.slice(-80),currency:"USD",marketOpen,dataAgeMs};
+ return {...item,price,candles:candles.slice(-160),currency:"USD",marketOpen,dataAgeMs};
 }
 function ema(v:number[],n:number){let x=v.slice(0,n).reduce((a,b)=>a+b,0)/n,k=2/(n+1);for(const z of v.slice(n))x=z*k+x*(1-k);return x;}
 function rsi(v:number[]){const d=v.slice(1).map((x,i)=>x-v[i]);let g=0,l=0;for(const x of d.slice(0,14)){g+=Math.max(0,x);l+=Math.max(0,-x);}g/=14;l/=14;for(const x of d.slice(14)){g=(g*13+Math.max(0,x))/14;l=(l*13+Math.max(0,-x))/14;}return l===0?(g===0?50:100):100-100/(1+g/l);}
 function atr(a:any[]){const t:number[]=[];for(let i=Math.max(1,a.length-15);i<a.length;i++)t.push(Math.max(a[i].h-a[i].l,Math.abs(a[i].h-a[i-1].c),Math.abs(a[i].l-a[i-1].c)));return t.reduce((x,y)=>x+y,0)/Math.max(1,t.length);}
-const AGENT_NAMES=["Tendance EMA","Structure EMA courte","Prix / EMA20","Prix / EMA50","RSI momentum","RSI accélération","MACD direction","MACD impulsion","Momentum 5 bougies","Momentum 10 bougies","Momentum 20 bougies","Higher highs","Higher lows","Force de bougie","Cassure du précédent high","Volatilité maîtrisée","Moyenne 20 périodes","Canal Donchian","Confirmation 3 bougies"];
-function evaluateAgents(candles:any[],closes:number[],ema20Value:number,ema50Value:number,rsiValue:number,atrValue:number,last:any,prev:any,price:number){
- const fast=ema(closes,9),slow=ema(closes,21),macd=ema(closes,12)-ema(closes,26);
- const prior=closes.slice(0,-1),previousMacd=ema(prior,12)-ema(prior,26);
- const recent=candles.slice(-21,-1),high20=Math.max(...recent.map(x=>x.h)),low20=Math.min(...recent.map(x=>x.l));
- const firstFive=closes.at(-6)||closes[0],firstTen=closes.at(-11)||closes[0],firstTwenty=closes.at(-21)||closes[0];
- const recent5=candles.slice(-5),prior5=candles.slice(-10,-5);
- const higherHighs=recent5.reduce((n,x)=>n+x.h,0)/5>prior5.reduce((n,x)=>n+x.h,0)/5;
- const higherLows=recent5.reduce((n,x)=>n+x.l,0)/5>prior5.reduce((n,x)=>n+x.l,0)/5;
- const range=Math.max(last.h-last.l,1e-12),body=(last.c-last.o)/range;
- const positive3=candles.slice(-3).filter(x=>x.c>x.o).length>=2;
- const mid20=closes.slice(-20).reduce((a,b)=>a+b,0)/20,donchianMid=(high20+low20)/2;
- const votes=[ema20Value>ema50Value,fast>slow,price>ema20Value,price>ema50Value,rsiValue>=50&&rsiValue<=68,rsiValue>rsi(prior),macd>0,macd>previousMacd,price/firstFive>1.001,price/firstTen>1.002,price/firstTwenty>1.003,higherHighs,higherLows,body>0.45,last.c>prev.h,atrValue/price>=0.001&&atrValue/price<=0.03,price>mid20,price>donchianMid,positive3];
- const agentVotes=votes.map((bullish,i)=>({name:AGENT_NAMES[i],bullish,verdict:bullish?"HAUSSIER":"NEUTRE/BAISSIER"}));
- const bullishVotes=votes.filter(Boolean).length;
- return {bullishVotes,totalAgents:AGENT_NAMES.length,agentVotes,consensus:bullishVotes>=12?"ACHAT":"ATTENTE"};
-}
 let cycleBusy=false;
 let testnetCycleBusy=false;
 async function closePosition(row:any,price:number,reason:string,stop=false){
@@ -91,8 +75,8 @@ async function scanPortfolio(account:any,positions:any[]){
   for(let j=0;j<settled.length;j++){
    const s=settled[j];if(s.status==="rejected"){errors++;const reason=String(s.reason);agentState.set(batch[j].symbol,{...(agentState.get(batch[j].symbol)||{}),symbol:batch[j].symbol,type:batch[j].type,state:/FERM/.test(reason)?"MARCHÉ FERMÉ":"DONNÉES INDISPONIBLES",updatedAt:Date.now()});console.warn("Market scan failed",batch[j].symbol,reason);continue;}
    const m=s.value,cs=m.candles,closes=cs.map((x:any)=>x.c),e20=ema(closes,20),e50=ema(closes,50),rv=rsi(closes),vol=atr(cs),last=cs[cs.length-1],prev=cs[cs.length-2];
-   const vote=evaluateAgents(cs,closes,e20,e50,rv,vol,last,prev,m.price);const signal=vote.bullishVotes>=12&&rv<70&&vol>0;
-   agentState.set(m.symbol,{symbol:m.symbol,type:m.type,price:m.price,ema20:e20,ema50:e50,rsi:rv,trend:e20>e50?"HAUSSIER":"BAISSIER",signal:Boolean(m.marketOpen)&&signal,score:vote.bullishVotes,agentCount:vote.totalAgents,agentVotes:vote.agentVotes,state:!m.marketOpen?"MARCHÉ FERMÉ · ANALYSE HISTORIQUE":held.has(m.symbol)?"EN POSITION":signal?"CONSENSUS ACHAT":"ANALYSÉ · ATTENTE",changePct:(m.price/cs[0].c-1)*100,spark:cs.slice(-40).map((x:any)=>x.c),chartCandles:cs.slice(-60).map((x:any)=>({t:x.t,o:x.o,h:x.h,l:x.l,c:x.c})),dataAgeMinutes:Math.round((Number(m.dataAgeMs)||0)/60000),updatedAt:Date.now()});
+   const vote=await runAgentPipeline({item:m,candles:cs,price:m.price,ema20:e20,ema50:e50,rsi:rv,atr:vol,riskBudget:Math.min(Number(account.initial_capital)*0.003,Number(account.cash)*0.01),availableCash:Number(account.cash),maxOrderNotional:Number(account.cash)*0.12,minimumOrderNotional:10});const signal=vote.valid;
+   agentState.set(m.symbol,{symbol:m.symbol,type:m.type,price:m.price,ema20:e20,ema50:e50,rsi:rv,trend:e20>e50?"HAUSSIER":"BAISSIER",signal:Boolean(m.marketOpen)&&signal,score:vote.bullishVotes,agentCount:vote.totalAgents,agentVotes:vote.agentVotes,pipelineValid:vote.valid,consensus:vote.consensus,newsBias:vote.newsBias,simulation:vote.simulation,risk:vote.risk,state:!m.marketOpen?"MARCHÉ FERMÉ · ANALYSE HISTORIQUE":held.has(m.symbol)?"EN POSITION":signal?"CONSENSUS ACHAT":"ANALYSÉ · ATTENTE",changePct:(m.price/cs[0].c-1)*100,spark:cs.slice(-40).map((x:any)=>x.c),chartCandles:cs.slice(-60).map((x:any)=>({t:x.t,o:x.o,h:x.h,l:x.l,c:x.c})),dataAgeMinutes:Math.round((Number(m.dataAgeMs)||0)/60000),updatedAt:Date.now()});
    results.push(m);
    // Closed markets remain analyzable from their last valid candles, but never generate paper orders or stale-price exits.
    if(!m.marketOpen)continue;
@@ -154,9 +138,9 @@ async function scanTestnetAccount(account:any){
  for(const item of cryptoMarkets){
   try{
    const m=await getMarket(item),cs=m.candles,closes=cs.map((x:any)=>x.c),e20=ema(closes,20),e50=ema(closes,50),rv=rsi(closes),vol=atr(cs),last=cs[cs.length-1],prev=cs[cs.length-2];
-   const vote=evaluateAgents(cs,closes,e20,e50,rv,vol,last,prev,m.price);
-   const signal=vote.bullishVotes>=12&&rv<70&&vol>0;
-   agentState.set(m.symbol,{symbol:m.symbol,type:"crypto",price:m.price,ema20:e20,ema50:e50,rsi:rv,trend:e20>e50?"HAUSSIER":"BAISSIER",signal,score:vote.bullishVotes,agentCount:vote.totalAgents,agentVotes:vote.agentVotes,state:"TESTNET · "+(signal?"SIGNAL ACHAT":"ANALYSÉ · ATTENTE"),changePct:(m.price/cs[0].c-1)*100,spark:cs.slice(-40).map((x:any)=>x.c),chartCandles:cs.slice(-60).map((x:any)=>({t:x.t,o:x.o,h:x.h,l:x.l,c:x.c})),updatedAt:Date.now()});
+   const vote=await runAgentPipeline({item:m,candles:cs,price:m.price,ema20:e20,ema50:e50,rsi:rv,atr:vol,riskBudget:25,availableCash:250,maxOrderNotional:25,minimumOrderNotional:10});
+   const signal=vote.valid;
+   agentState.set(m.symbol,{symbol:m.symbol,type:"crypto",price:m.price,ema20:e20,ema50:e50,rsi:rv,trend:e20>e50?"HAUSSIER":"BAISSIER",signal,score:vote.bullishVotes,agentCount:vote.totalAgents,agentVotes:vote.agentVotes,pipelineValid:vote.valid,consensus:vote.consensus,newsBias:vote.newsBias,simulation:vote.simulation,risk:vote.risk,state:"TESTNET · "+(signal?"SIGNAL ACHAT":"ANALYSÉ · ATTENTE"),changePct:(m.price/cs[0].c-1)*100,spark:cs.slice(-40).map((x:any)=>x.c),chartCandles:cs.slice(-60).map((x:any)=>({t:x.t,o:x.o,h:x.h,l:x.l,c:x.c})),updatedAt:Date.now()});
    scanned++;
    const pendingRows=await db`SELECT * FROM testnet_auto_orders WHERE telegram_user_id=${uid} AND symbol=${m.symbol.replace(/USDT$/,"/USDT")} AND status NOT IN ('closed','filled','canceled','rejected') ORDER BY created_at DESC LIMIT 1`;
    if(pendingRows.length){
