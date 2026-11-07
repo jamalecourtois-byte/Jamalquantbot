@@ -80,6 +80,24 @@ function makeClient(id: string) {
   }
   return client;
 }
+
+async function findTestnetOrderByClientId(client: any, market: any, clientOrderId: string, fallbackSide: string) {
+  try {
+    const raw = await client.request("order", "private", "GET", { symbol: market.id, origClientOrderId: clientOrderId });
+    return typeof client.parseOrder === "function" ? client.parseOrder(raw, market) : {
+      id: raw.orderId, clientOrderId: raw.clientOrderId, status: String(raw.status || "").toLowerCase(),
+      amount: Number(raw.origQty || 0), filled: Number(raw.executedQty || 0),
+      average: Number(raw.price || 0), cost: Number(raw.cummulativeQuoteQty || 0),
+      type: String(raw.type || "market").toLowerCase(), side: String(raw.side || fallbackSide).toLowerCase(),
+    };
+  } catch (error) {
+    const name = error instanceof Error ? error.name : "";
+    const message = error instanceof Error ? error.message : String(error);
+    if (name === "OrderNotFound" || /-2013|order does not exist|order not found/i.test(message)) return null;
+    throw new Error("ORDER_LOOKUP_UNCERTAIN");
+  }
+}
+
 function prefixFor(id: string) { return "EXCHANGE_" + id.toUpperCase() + "_"; }
 
 export async function handlePrivateConnectorRequest(req: Request): Promise<Response | null> {
@@ -226,10 +244,22 @@ export async function handlePrivateConnectorRequest(req: Request): Promise<Respo
           if (minCost > quoteAmount) return json({ ok: false, error: "Montant inférieur au minimum du marché.", minimum: minCost }, 400);
           if (estimatedBase <= 0) return json({ ok: false, error: "Quantité estimée invalide." }, 400);
           // quoteOrderQty makes the spend limit exact in quote currency (USDT).
-          order = await client.createOrder(symbol, "market", "buy", undefined, undefined, {
-            quoteOrderQty: quoteAmount,
-            newClientOrderId: clientOrderId,
-          });
+          try {
+            order = await client.createOrder(symbol, "market", "buy", undefined, undefined, {
+              quoteOrderQty: quoteAmount,
+              newClientOrderId: clientOrderId,
+            });
+          } catch (submitError) {
+            try {
+              const recovered = await findTestnetOrderByClientId(client, market, clientOrderId, side);
+              if (!recovered) throw submitError;
+              order = recovered;
+            } catch (recoveryError) {
+              if (recoveryError === submitError) throw submitError;
+              console.warn("Binance Testnet buy result uncertain; same clientOrderId required for retry");
+              return json({ ok: false, error: "Résultat de soumission incertain. Réessaie uniquement avec le même clientOrderId ; aucun nouvel identifiant ne doit être créé." }, 503);
+            }
+          }
         } else {
           const base = symbol.split("/")[0];
           const freeBase = Number(balance?.free?.[base] || 0);
@@ -240,7 +270,19 @@ export async function handlePrivateConnectorRequest(req: Request): Promise<Respo
           if (!Number.isFinite(estimatedQuote) || estimatedQuote <= 0 || estimatedQuote > 50.5) {
             return json({ ok: false, error: "Valeur de vente supérieure à 50 USDT sur Testnet." }, 400);
           }
-          order = await client.createOrder(symbol, "market", "sell", amount, undefined, { newClientOrderId: clientOrderId });
+          try {
+            order = await client.createOrder(symbol, "market", "sell", amount, undefined, { newClientOrderId: clientOrderId });
+          } catch (submitError) {
+            try {
+              const recovered = await findTestnetOrderByClientId(client, market, clientOrderId, side);
+              if (!recovered) throw submitError;
+              order = recovered;
+            } catch (recoveryError) {
+              if (recoveryError === submitError) throw submitError;
+              console.warn("Binance Testnet sell result uncertain; same clientOrderId required for retry");
+              return json({ ok: false, error: "Résultat de soumission incertain. Réessaie uniquement avec le même clientOrderId ; aucun nouvel identifiant ne doit être créé." }, 503);
+            }
+          }
         }
       }
 
