@@ -18,13 +18,44 @@ const brokerCatalog=[
 const allowed = new Set(ccxt.exchanges);
 const json = (data: unknown, status=200) => new Response(JSON.stringify(data), {status,headers:{"content-type":"application/json; charset=utf-8","access-control-allow-origin":"*","cache-control":"no-store"}});
 const durations:Record<string,number>={"1m":60000,"3m":180000,"5m":300000,"15m":900000,"30m":1800000,"1h":3600000,"2h":7200000,"4h":14400000,"6h":21600000,"8h":28800000,"12h":43200000,"1d":86400000,"3d":259200000,"1w":604800000,"1M":2678400000};
-Bun.serve({port:Number(Bun.env.PORT||3000),async fetch(req){
+Bun.serve({port:Number(Bun.env.PORT||3000),websocket:{
+ open(ws:any){
+  void (async()=>{
+   const {exchangeId,symbol}=ws.data||{};
+   const pro=(ccxt as any).pro;
+   const Constructor=pro?.[exchangeId];
+   if(typeof Constructor!=="function")throw new Error("Flux WebSocket CCXT Pro indisponible pour "+exchangeId);
+   const stream=new Constructor({enableRateLimit:true,timeout:20000});
+   ws.data.stream=stream;
+   await stream.loadMarkets();
+   if(!stream.markets[symbol])throw new Error("Marché indisponible : "+symbol);
+   ws.send(JSON.stringify({ok:true,type:"connected",exchange:exchangeId,symbol,timestamp:Date.now()}));
+   while(ws.readyState===1){
+    const book=await stream.watchOrderBook(symbol,10);
+    if(ws.readyState!==1)break;
+    ws.send(JSON.stringify({ok:true,type:"orderbook",exchange:exchangeId,symbol,timestamp:book.timestamp||Date.now(),bids:(book.bids||[]).slice(0,10),asks:(book.asks||[]).slice(0,10)}));
+   }
+  })().catch((error:any)=>{
+   try{if(ws.readyState===1)ws.send(JSON.stringify({ok:false,type:"error",error:error instanceof Error?error.message:"Erreur WebSocket"}));}catch{}
+   try{ws.close(1011,"Flux indisponible");}catch{}
+  }).finally(async()=>{try{await ws.data?.stream?.close();}catch{}});
+ },
+ close(ws:any){try{ws.data?.stream?.close();}catch{}}
+},async fetch(req,server){
  const privateResponse = await handlePrivateConnectorRequest(req);
  if (privateResponse) return privateResponse;
  const u=new URL(req.url);
  if(req.method==="OPTIONS")return new Response(null,{status:204,headers:{"access-control-allow-origin":"*","access-control-allow-methods":"GET,OPTIONS","access-control-allow-headers":"content-type"}});
  if(req.method!=="GET")return json({ok:false,error:"Méthode non autorisée"},405);
  if(u.pathname==="/"||u.pathname==="/dashboard")return new Response(DASHBOARD_HTML,{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store"}});
+ if(u.pathname==="/ws/orderbook"){
+  const id=(u.searchParams.get("exchange")||"").toLowerCase(),symbol=(u.searchParams.get("symbol")||"").trim();
+  if(!allowed.has(id))return json({ok:false,error:"Exchange non pris en charge par CCXT"},400);
+  if(!/^[A-Z0-9]{2,20}\\/[A-Z0-9]{2,20}(:[A-Z0-9]{2,20})?$/.test(symbol))return json({ok:false,error:"Symbole invalide. Format attendu : BTC/USDT"},400);
+  if(typeof (ccxt as any).pro?.[id]!=="function")return json({ok:false,error:"Flux CCXT Pro indisponible pour cet exchange"},501);
+  const upgraded=server.upgrade(req,{data:{exchangeId:id,symbol,stream:null}});
+  return upgraded?undefined:json({ok:false,error:"Impossible d'ouvrir le flux WebSocket"},500);
+ }
  if(u.pathname==="/health")return json({ok:true,service:"JamalQuant Exchange Hub",mode:"public-read-only",tradingEnabled:false,ccxtVersion:ccxt.version,exchangeCount:ccxt.exchanges.length});
  if(u.pathname==="/connectors")return json({ok:true,library:"CCXT",count:ccxt.exchanges.length,connectors:ccxt.exchanges.map((id:string)=>({id,name:id==="myokx"?"OKX Europe (EEE)":id==="okx"?"OKX Global":id,region:id==="myokx"?"EEA":id==="okx"?"Global":null,publicMarketData:"exchange-dependent",ohlcv:"requires-market-check",privateAccount:false,placeOrders:false,status:"catalogued-not-yet-validated"})),brokerCount:brokerCatalog.length,brokers:brokerCatalog,limitations:"Les courtiers natifs sont répertoriés, mais non connectés. Les accès privés et les ordres exigent une intégration API et des identifiants autorisés par plateforme."});
  if(u.pathname==="/resolve-symbol"){
@@ -94,5 +125,5 @@ Bun.serve({port:Number(Bun.env.PORT||3000),async fetch(req){
   finally{}
  }
  if(u.pathname==="/account"||u.pathname==="/orders")return json({ok:false,error:"Trading privé désactivé : aucune clé API ni autorisation de compte configurée.",tradingEnabled:false},403);
- return json({ok:false,error:"Route inconnue",routes:["/health","/connectors","/ticker","/ohlcv"]},404);
+ return json({ok:false,error:"Route inconnue",routes:["/health","/connectors","/ticker","/ohlcv","/ws/orderbook?exchange=myokx&symbol=BTC/USDT"]},404);
 }});
