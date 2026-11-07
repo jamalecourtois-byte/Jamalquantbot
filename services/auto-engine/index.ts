@@ -63,7 +63,7 @@ async function scanPortfolio(account:any,positions:any[]){
    const s=settled[j];if(s.status==="rejected"){errors++;const reason=String(s.reason);agentState.set(batch[j].symbol,{...(agentState.get(batch[j].symbol)||{}),symbol:batch[j].symbol,type:batch[j].type,state:/FERM/.test(reason)?"MARCHÉ FERMÉ":"DONNÉES INDISPONIBLES",updatedAt:Date.now()});console.warn("Market scan failed",batch[j].symbol,reason);continue;}
    const m=s.value,cs=m.candles,closes=cs.map((x:any)=>x.c),e20=ema(closes,20),e50=ema(closes,50),rv=rsi(closes),vol=atr(cs),last=cs[cs.length-1],prev=cs[cs.length-2];
    const signal=e20>e50&&last.c>e20&&rv>=52&&rv<=68&&last.c>prev.c&&vol>0;
-   agentState.set(m.symbol,{symbol:m.symbol,type:m.type,price:m.price,ema20:e20,ema50:e50,rsi:rv,trend:e20>e50?"HAUSSIER":"BAISSIER",signal,state:held.has(m.symbol)?"EN POSITION":signal?"SIGNAL":"ATTENTE",changePct:(m.price/cs[0].c-1)*100,spark:cs.slice(-40).map((x:any)=>x.c),updatedAt:Date.now()});
+   agentState.set(m.symbol,{symbol:m.symbol,type:m.type,price:m.price,ema20:e20,ema50:e50,rsi:rv,trend:e20>e50?"HAUSSIER":"BAISSIER",signal,state:held.has(m.symbol)?"EN POSITION":signal?"SIGNAL":"ATTENTE",changePct:(m.price/cs[0].c-1)*100,spark:cs.slice(-40).map((x:any)=>x.c),chartCandles:cs.slice(-60).map((x:any)=>({t:x.t,o:x.o,h:x.h,l:x.l,c:x.c})),updatedAt:Date.now()});
    results.push(m);
    const pos:any=held.get(m.symbol);
    if(pos){
@@ -121,6 +121,16 @@ async function handle(req:Request){
  if(req.headers.get("x-engine-secret")!==env.AUTO_ENGINE_SECRET)return new Response("Unauthorized",{status:401});
  let body:any={};try{body=await req.json();}catch{return new Response("Bad JSON",{status:400});}
  const userId=Number(body.userId);if(!Number.isSafeInteger(userId)||userId<=0)return Response.json({error:"Invalid userId"},{status:400});
+ if(url.pathname==="/reset"){
+  await db.begin(async(tx:any)=>{
+   await tx`UPDATE paper_auto_portfolios SET status='STOPPED',initial_capital=0,cash=0,realized_pnl=0,updated_at=NOW(),last_scan_at=NULL WHERE telegram_user_id=${userId}`;
+   await tx`DELETE FROM paper_auto_positions WHERE telegram_user_id=${userId}`;
+   await tx`DELETE FROM paper_auto_trades WHERE telegram_user_id=${userId}`;
+   await tx`DELETE FROM paper_auto_equity_history WHERE telegram_user_id=${userId}`;
+   await tx`DELETE FROM paper_auto_cooldowns WHERE telegram_user_id=${userId}`;
+  });
+  return Response.json({ok:true,reset:true,status:"STOPPED",capital:0,cash:0,equity:0,pnl:0,openPositions:0});
+ }
  if(url.pathname==="/start"){
   const capital=Number(body.capital);if(!Number.isFinite(capital)||capital<MIN_CAPITAL||capital>MAX_CAPITAL)return Response.json({error:"Capital fictif invalide ("+MIN_CAPITAL+" à "+MAX_CAPITAL.toLocaleString("fr-FR")+" USDT)"},{status:400});
   const existing=await db`SELECT * FROM paper_auto_portfolios WHERE telegram_user_id=${userId}`;
