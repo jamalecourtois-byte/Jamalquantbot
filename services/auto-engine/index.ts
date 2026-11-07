@@ -122,6 +122,7 @@ async function handle(req:Request){
  let body:any={};try{body=await req.json();}catch{return new Response("Bad JSON",{status:400});}
  const userId=Number(body.userId);if(!Number.isSafeInteger(userId)||userId<=0)return Response.json({error:"Invalid userId"},{status:400});
  if(url.pathname==="/reset"){
+  if(cycleBusy)return Response.json({error:"Un scan est en cours. Réessaie dans quelques secondes."},{status:409});
   await db.begin(async(tx:any)=>{
    await tx`UPDATE paper_auto_portfolios SET status='STOPPED',initial_capital=0,cash=0,realized_pnl=0,updated_at=NOW(),last_scan_at=NULL WHERE telegram_user_id=${userId}`;
    await tx`DELETE FROM paper_auto_positions WHERE telegram_user_id=${userId}`;
@@ -129,7 +130,7 @@ async function handle(req:Request){
    await tx`DELETE FROM paper_auto_equity_history WHERE telegram_user_id=${userId}`;
    await tx`DELETE FROM paper_auto_cooldowns WHERE telegram_user_id=${userId}`;
   });
-  return Response.json({ok:true,reset:true,status:"STOPPED",capital:0,cash:0,equity:0,pnl:0,openPositions:0});
+  return Response.json({ok:true,reset:true,status:"STOPPED",capital:0,cash:0,available:0,invested:0,realized:0,unrealized:0,equity:0,pnl:0,equityHistory:[],openPositions:0,positions:[],trades:[],universe:universe.length,markets:universe.map(x=>x.symbol),agents:universe.map(u=>agentState.get(u.symbol)||{symbol:u.symbol,type:u.type,state:"INITIALISATION"})});
  }
  if(url.pathname==="/start"){
   const capital=Number(body.capital);if(!Number.isFinite(capital)||capital<MIN_CAPITAL||capital>MAX_CAPITAL)return Response.json({error:"Capital fictif invalide ("+MIN_CAPITAL+" à "+MAX_CAPITAL.toLocaleString("fr-FR")+" USDT)"},{status:400});
