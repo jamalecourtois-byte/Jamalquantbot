@@ -289,7 +289,7 @@ async function handle(req:Request){
   const account=await testnetRequest("/private/account",{exchange:"binance"});
   if(account.environment!=="binance-spot-testnet"||account.accountConnected!==true)return Response.json({error:"Compte Binance Spot Testnet non vérifié."},{status:409});
   const usdt=Number((account.assets||[]).find((x:any)=>x.asset==="USDT")?.total||0);
-  if(usdt<10)return Response.json({error:"Solde USDT Testnet inférieur à 10 USDT."},{status:409});
+  if(usdt<100)return Response.json({error:"Solde USDT Testnet insuffisant pour respecter le budget de risque : minimum 100 USDT requis (10 % maximum par ordre, ordre minimum 10 USDT). Scanner non démarré."},{status:409});
   await db`INSERT INTO testnet_auto_accounts(telegram_user_id,status,starting_usdt,updated_at) VALUES(${userId},'RUNNING',${usdt},NOW()) ON CONFLICT(telegram_user_id) DO UPDATE SET status='RUNNING',starting_usdt=EXCLUDED.starting_usdt,last_scan_at=NULL,updated_at=NOW()`;
   void testnetCycle().catch(err=>console.error("Initial Testnet scan failed",err instanceof Error?err.message:String(err)));
   return Response.json({ok:true,mode:"BINANCE_SPOT_TESTNET",realTradingEnabled:false,status:"RUNNING",startingUsdt:usdt,capital:usdt,cash:usdt,available:usdt,equity:usdt,pnl:0,openPositions:0,universe:universe.filter(x=>x.type==="crypto").length,markets:universe.filter(x=>x.type==="crypto").map(x=>x.symbol),maxOrderUsdt:25,maxOpenPositions:2});
