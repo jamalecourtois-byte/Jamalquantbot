@@ -168,25 +168,57 @@ export async function handlePrivateConnectorRequest(req: Request): Promise<Respo
       const ticker = await client.fetchTicker(symbol);
       const price = Number(ticker?.last);
       if (!Number.isFinite(price) || price <= 0) return json({ ok: false, error: "Prix de marché invalide." }, 502);
-      let amount: number;
-      if (side === "buy") {
-        const balance = await client.fetchBalance();
-        const freeQuote = Number(balance?.free?.USDT || 0);
-        if (freeQuote < quoteAmount) return json({ ok: false, error: "Solde USDT Testnet insuffisant.", available: freeQuote }, 409);
-        amount = Number(client.amountToPrecision(symbol, quoteAmount / price));
-      } else {
-        const balance = await client.fetchBalance();
-        const base = symbol.split("/")[0];
-        const freeBase = Number(balance?.free?.[base] || 0);
-        if (freeBase < baseAmount) return json({ ok: false, error: "Solde disponible insuffisant pour cette vente.", available: freeBase }, 409);
-        amount = Number(client.amountToPrecision(symbol, baseAmount));
+
+      // Binance is the durable idempotency authority: look up the client order ID
+      // before any retry. Only a definite "not found" permits a new submission.
+      let order: any = null;
+      try {
+        order = await client.fetchOrder(undefined, symbol, { origClientOrderId: clientOrderId });
+      } catch (lookupError) {
+        const name = lookupError instanceof Error ? lookupError.name : "";
+        const message = lookupError instanceof Error ? lookupError.message : String(lookupError);
+        const definitelyMissing = name === "OrderNotFound" || /-2013|order does not exist|order not found/i.test(message);
+        if (!definitelyMissing) {
+          console.warn("Binance Testnet idempotency lookup inconclusive", message.slice(0, 180));
+          return json({ ok: false, error: "Impossible de vérifier l'identifiant de l'ordre. Nouvelle soumission bloquée par sécurité." }, 503);
+        }
       }
-      if (!Number.isFinite(amount) || amount <= 0) return json({ ok: false, error: "Quantité arrondie invalide." }, 400);
-      const estimatedQuote = amount * price;
-      if (!Number.isFinite(estimatedQuote) || estimatedQuote <= 0 || estimatedQuote > 25.5) {
-        return json({ ok: false, error: "Valeur de l'ordre hors limite Testnet (25 USDT max)." }, 400);
+
+      if (!order) {
+        const balance = await client.fetchBalance();
+        let amount: number | undefined;
+        if (side === "buy") {
+          const freeQuote = Number(balance?.free?.USDT || 0);
+          if (freeQuote < quoteAmount) return json({ ok: false, error: "Solde USDT Testnet insuffisant.", available: freeQuote }, 409);
+          const estimatedBase = quoteAmount / price;
+          const minCost = Number(market.limits?.cost?.min || 0);
+          if (minCost > quoteAmount) return json({ ok: false, error: "Montant inférieur au minimum du marché.", minimum: minCost }, 400);
+          if (estimatedBase <= 0) return json({ ok: false, error: "Quantité estimée invalide." }, 400);
+          // quoteOrderQty makes the spend limit exact in quote currency (USDT).
+          order = await client.createOrder(symbol, "market", "buy", undefined, undefined, {
+            quoteOrderQty: quoteAmount,
+            clientOrderId,
+          });
+        } else {
+          const base = symbol.split("/")[0];
+          const freeBase = Number(balance?.free?.[base] || 0);
+          if (freeBase < baseAmount) return json({ ok: false, error: "Solde disponible insuffisant pour cette vente.", available: freeBase }, 409);
+          amount = Number(client.amountToPrecision(symbol, baseAmount));
+          if (!Number.isFinite(amount) || amount <= 0) return json({ ok: false, error: "Quantité arrondie invalide." }, 400);
+          const estimatedQuote = amount * price;
+          if (!Number.isFinite(estimatedQuote) || estimatedQuote <= 0 || estimatedQuote > 25.5) {
+            return json({ ok: false, error: "Valeur de l'ordre hors limite Testnet (25 USDT max)." }, 400);
+          }
+          order = await client.createOrder(symbol, "market", "sell", amount, undefined, { clientOrderId });
+        }
       }
-      const order = await client.createOrder(symbol, "market", side, amount, undefined, { newClientOrderId: clientOrderId });
+
+      // Re-read exchange state to return actual fills/fees rather than assuming submission == fill.
+      if (order?.id && order.status !== "closed" && order.status !== "canceled" && typeof client.fetchOrder === "function") {
+        try { order = await client.fetchOrder(order.id, symbol); } catch (pollError) {
+          console.warn("Binance Testnet order status pending", pollError instanceof Error ? pollError.message.slice(0, 160) : "unknown");
+        }
+      }
       return json({
         ok: true,
         environment: "binance-spot-testnet",
@@ -194,14 +226,17 @@ export async function handlePrivateConnectorRequest(req: Request): Promise<Respo
         tradingEnabled: false,
         order: {
           clientOrderId,
-          id: order.id || null,
+          id: order?.id || null,
           symbol,
           side,
-          type: order.type || "market",
-          amount: Number(order.amount || amount),
-          filled: Number(order.filled || 0),
-          average: Number(order.average || 0),
-          status: order.status || "submitted",
+          type: order?.type || "market",
+          amount: Number(order?.amount || amount || 0),
+          filled: Number(order?.filled || 0),
+          remaining: Number(order?.remaining || 0),
+          cost: Number(order?.cost || 0),
+          average: Number(order?.average || 0),
+          fee: order?.fee || null,
+          status: order?.status || "submitted",
         },
         message: "Ordre envoyé exclusivement à Binance Spot Testnet. Aucun argent réel n'a été engagé.",
       });
