@@ -146,10 +146,13 @@ export async function handlePrivateConnectorRequest(req: Request): Promise<Respo
     try { body = await req.json(); } catch { return json({ ok: false, error: "JSON invalide." }, 400); }
     const symbol = String(body?.symbol || "").toUpperCase();
     const side = String(body?.side || "").toLowerCase();
+    const clientOrderId = String(body?.clientOrderId || "");
     const quoteAmount = Number(body?.quoteAmount);
     const baseAmount = Number(body?.baseAmount);
     if (!/^[A-Z0-9]{2,15}\/USDT$/.test(symbol)) return json({ ok: false, error: "Paire invalide. Format attendu : BTC/USDT." }, 400);
     if (side !== "buy" && side !== "sell") return json({ ok: false, error: "Sens invalide." }, 400);
+    // A stable client order ID is mandatory so a caller can safely retry after a timeout.
+    if (!/^[A-Za-z0-9_-]{8,36}$/.test(clientOrderId)) return json({ ok: false, error: "clientOrderId obligatoire (8 à 36 caractères) pour éviter les doublons." }, 400);
     if (side === "buy" && (!Number.isFinite(quoteAmount) || quoteAmount <= 0 || quoteAmount > 25)) {
       return json({ ok: false, error: "Achat Testnet limité à 25 USDT par ordre." }, 400);
     }
@@ -183,13 +186,14 @@ export async function handlePrivateConnectorRequest(req: Request): Promise<Respo
       if (!Number.isFinite(estimatedQuote) || estimatedQuote <= 0 || estimatedQuote > 25.5) {
         return json({ ok: false, error: "Valeur de l'ordre hors limite Testnet (25 USDT max)." }, 400);
       }
-      const order = await client.createOrder(symbol, "market", side, amount);
+      const order = await client.createOrder(symbol, "market", side, amount, undefined, { newClientOrderId: clientOrderId });
       return json({
         ok: true,
         environment: "binance-spot-testnet",
         simulatedFunds: true,
         tradingEnabled: false,
         order: {
+          clientOrderId,
           id: order.id || null,
           symbol,
           side,
