@@ -4,6 +4,7 @@ if(!env.DATABASE_URL||!env.AUTO_ENGINE_SECRET)throw new Error("DATABASE_URL ou A
 const db=postgres(env.DATABASE_URL,{max:8,idle_timeout:20,connect_timeout:10});
 await db`CREATE TABLE IF NOT EXISTS paper_auto_portfolios (telegram_user_id BIGINT PRIMARY KEY,initial_capital NUMERIC(24,8) NOT NULL,cash NUMERIC(24,8) NOT NULL,realized_pnl NUMERIC(24,8) NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'STOPPED',created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
 await db`ALTER TABLE paper_auto_portfolios ADD COLUMN IF NOT EXISTS last_scan_at TIMESTAMPTZ`;
+await db`ALTER TABLE paper_auto_portfolios ADD COLUMN IF NOT EXISTS last_scan_at TIMESTAMPTZ`;
 await db`CREATE TABLE IF NOT EXISTS paper_auto_positions (telegram_user_id BIGINT NOT NULL REFERENCES paper_auto_portfolios(telegram_user_id) ON DELETE CASCADE,symbol TEXT NOT NULL,market_type TEXT NOT NULL,quantity NUMERIC(30,12) NOT NULL,entry_price NUMERIC(24,10) NOT NULL,entry_fee NUMERIC(24,8) NOT NULL,mark_price NUMERIC(24,10) NOT NULL,stop_price NUMERIC(24,10) NOT NULL,target_price NUMERIC(24,10) NOT NULL,highest_price NUMERIC(24,10) NOT NULL,initial_risk NUMERIC(24,10) NOT NULL,last_candle_time BIGINT NOT NULL,cooldown_until TIMESTAMPTZ,updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),PRIMARY KEY(telegram_user_id,symbol))`;
 await db`CREATE TABLE IF NOT EXISTS paper_auto_trades (id BIGSERIAL PRIMARY KEY,telegram_user_id BIGINT NOT NULL,symbol TEXT NOT NULL,market_type TEXT NOT NULL,side TEXT NOT NULL,quantity NUMERIC(30,12) NOT NULL,price NUMERIC(24,10) NOT NULL,fee NUMERIC(24,8) NOT NULL,pnl NUMERIC(24,8),reason TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
 await db`CREATE TABLE IF NOT EXISTS paper_auto_cooldowns (telegram_user_id BIGINT NOT NULL,symbol TEXT NOT NULL,cooldown_until TIMESTAMPTZ NOT NULL,PRIMARY KEY(telegram_user_id,symbol))`;
@@ -13,6 +14,8 @@ await db`CREATE INDEX IF NOT EXISTS paper_auto_positions_user_idx ON paper_auto_
 await db`CREATE INDEX IF NOT EXISTS paper_auto_trades_user_created_idx ON paper_auto_trades(telegram_user_id,created_at DESC)`;
 const fmt=(n:number)=>Number(n||0).toLocaleString("fr-FR",{minimumFractionDigits:2,maximumFractionDigits:2});
 const universe=[{symbol:"BTCUSDT",type:"crypto"},{symbol:"ETHUSDT",type:"crypto"},{symbol:"SOLUSDT",type:"crypto"},{symbol:"BNBUSDT",type:"crypto"},{symbol:"XRPUSDT",type:"crypto"},{symbol:"DOGEUSDT",type:"crypto"},{symbol:"LINKUSDT",type:"crypto"},{symbol:"AVAXUSDT",type:"crypto"},{symbol:"EURUSD=X",type:"forex"},{symbol:"GBPUSD=X",type:"forex"},{symbol:"GC=F",type:"commodity"},{symbol:"SI=F",type:"commodity"},{symbol:"CL=F",type:"commodity"},{symbol:"^GSPC",type:"index"},{symbol:"^IXIC",type:"index"},{symbol:"AAPL",type:"stock"},{symbol:"MSFT",type:"stock"},{symbol:"NVDA",type:"stock"},{symbol:"AMZN",type:"stock"}];
+const MIN_CAPITAL=100,MAX_CAPITAL=1000000;
+const agentState=new Map<string,any>();
 async function telegram(message:string,userId:number){if(!env.BOT_TOKEN)return;const r=await fetch("https://api.telegram.org/bot"+env.BOT_TOKEN+"/sendMessage",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({chat_id:userId,text:message}),signal:AbortSignal.timeout(10000)});if(!r.ok)throw new Error("Telegram HTTP "+r.status);}
 async function getMarket(item:any){
  if(item.type==="crypto"){
@@ -30,6 +33,7 @@ async function getMarket(item:any){
  if(!r.ok||!z||!q)throw new Error("Yahoo data unavailable "+item.symbol);
  const times=z.timestamp||[],now=Date.now(),candles=times.map((t:number,i:number)=>({t:t*1000,end:t*1000+300000,o:+q.open?.[i],h:+q.high?.[i],l:+q.low?.[i],c:+q.close?.[i]})).filter((x:any)=>[x.t,x.end,x.o,x.h,x.l,x.c].every(Number.isFinite)&&x.end<now-1000&&x.l>0&&x.h>=Math.max(x.o,x.c)&&x.l<=Math.min(x.o,x.c)&&x.h>=x.l);
  if(candles.length<60)throw new Error("Pas assez de bougies Yahoo "+item.symbol);
+ if(now-candles[candles.length-1].end>20*60*1000)throw new Error("MARCHÉ FERMÉ ou données périmées "+item.symbol);
  const price=Number(z.meta?.regularMarketPrice||candles[candles.length-1].c);
  if(!Number.isFinite(price)||price<=0)throw new Error("Prix Yahoo invalide "+item.symbol);
  return {...item,price,candles:candles.slice(-80),currency:"USD"};
@@ -56,8 +60,10 @@ async function scanPortfolio(account:any,positions:any[]){
   const batch=universe.slice(i,i+3);
   const settled=await Promise.allSettled(batch.map(getMarket));
   for(let j=0;j<settled.length;j++){
-   const s=settled[j];if(s.status==="rejected"){errors++;console.warn("Market scan failed",batch[j].symbol,String(s.reason));continue;}
+   const s=settled[j];if(s.status==="rejected"){errors++;const reason=String(s.reason);agentState.set(batch[j].symbol,{...(agentState.get(batch[j].symbol)||{}),symbol:batch[j].symbol,type:batch[j].type,state:/FERM/.test(reason)?"MARCHÉ FERMÉ":"DONNÉES INDISPONIBLES",updatedAt:Date.now()});console.warn("Market scan failed",batch[j].symbol,reason);continue;}
    const m=s.value,cs=m.candles,closes=cs.map((x:any)=>x.c),e20=ema(closes,20),e50=ema(closes,50),rv=rsi(closes),vol=atr(cs),last=cs[cs.length-1],prev=cs[cs.length-2];
+   const signal=e20>e50&&last.c>e20&&rv>=52&&rv<=68&&last.c>prev.c&&vol>0;
+   agentState.set(m.symbol,{symbol:m.symbol,type:m.type,price:m.price,ema20:e20,ema50:e50,rsi:rv,trend:e20>e50?"HAUSSIER":"BAISSIER",signal,state:held.has(m.symbol)?"EN POSITION":signal?"SIGNAL":"ATTENTE",changePct:(m.price/cs[0].c-1)*100,spark:cs.slice(-40).map((x:any)=>x.c),updatedAt:Date.now()});
    results.push(m);
    const pos:any=held.get(m.symbol);
    if(pos){
@@ -67,11 +73,12 @@ async function scanPortfolio(account:any,positions:any[]){
     if(m.price>=Number(pos.target_price)){await closePosition(pos,m.price,"Objectif théorique 2R atteint");continue;}
     if(e20<e50||rv<45){await closePosition(pos,m.price,"Momentum haussier invalidé");continue;}
     await db`UPDATE paper_auto_positions SET mark_price=${m.price},highest_price=${high},stop_price=${stop},updated_at=NOW() WHERE telegram_user_id=${uid} AND symbol=${m.symbol}`;
+    agentState.set(m.symbol,{...agentState.get(m.symbol),state:"EN POSITION",updatedAt:Date.now()});
     continue;
    }
    const fresh=await db`SELECT status FROM paper_auto_portfolios WHERE telegram_user_id=${uid}`;
    if(!fresh.length||fresh[0].status!=="RUNNING")return;
-   if(!(e20>e50&&last.c>e20&&rv>=52&&rv<=68&&last.c>prev.c&&vol>0))continue;
+   if(!signal)continue;
    const exists=await db`SELECT 1 FROM paper_auto_positions WHERE telegram_user_id=${uid} AND symbol=${m.symbol}`;if(exists.length)continue;const cooling=await db`SELECT 1 FROM paper_auto_cooldowns WHERE telegram_user_id=${uid} AND symbol=${m.symbol} AND cooldown_until>NOW()`;if(cooling.length)continue;
    const ep=m.price*(1+0.0002),distance=vol*1.5,budget=Math.min(Number(account.initial_capital)*0.003,Number(account.cash)*0.01),qtyRisk=budget/distance,qtyCash=Number(account.cash)*0.12/ep,qty=Math.min(qtyRisk,qtyCash),notional=qty*ep,fee=notional*0.0005,cost=notional+fee;
    if(!(qty>0&&notional>=10&&cost<=Number(account.cash)*0.2))continue;
@@ -84,7 +91,7 @@ async function scanPortfolio(account:any,positions:any[]){
     await tx`INSERT INTO paper_auto_trades(telegram_user_id,symbol,market_type,side,quantity,price,fee,reason) VALUES(${uid},${m.symbol},${m.type},'BUY',${qty},${ep},${fee},'Signal EMA20/EMA50 + RSI + momentum')`;
     return true;
    });
-   if(inserted)await telegram("🟢 JAMALQUANT · ENTRÉE SIMULÉE\n"+m.symbol+" ("+m.type+")\nPrix : "+fmt(ep)+"\nStop : "+fmt(stop)+"\nObjectif 2R : "+fmt(target)+"\nRisque budgété : "+fmt(budget)+" USD\nRSI : "+rv.toFixed(1)+"\nSimulation uniquement.",uid);
+   if(inserted){agentState.set(m.symbol,{...agentState.get(m.symbol),state:"EN POSITION",updatedAt:Date.now()});await telegram("🟢 JAMALQUANT · ENTRÉE SIMULÉE\n"+m.symbol+" ("+m.type+")\nPrix : "+fmt(ep)+"\nStop : "+fmt(stop)+"\nObjectif 2R : "+fmt(target)+"\nRisque budgété : "+fmt(budget)+" USD\nRSI : "+rv.toFixed(1)+"\nSimulation uniquement.",uid);}
   }
  }
  return {scanned:results.length,errors,markets:results.map(x=>x.symbol)};
@@ -110,15 +117,15 @@ async function cycle(){
 }
 async function handle(req:Request){
  const url=new URL(req.url);
- if(url.pathname==="/health"&&req.method==="GET"){const x=await db`SELECT 1 AS ok`;return Response.json({ok:true,engine:"multi-market-paper-v2",database:x.length===1?"connected":"error",mode:"paper-trading-only",liveTradingEnabled:false,universe:universe.length,markets:universe});}
+ if(url.pathname==="/health"&&req.method==="GET"){const x=await db`SELECT 1 AS ok`;return Response.json({ok:true,engine:"multi-market-paper-v3",database:x.length===1?"connected":"error",mode:"paper-trading-only",liveTradingEnabled:false,universe:universe.length,markets:universe,minCapital:MIN_CAPITAL,maxCapital:MAX_CAPITAL});}
  if(req.headers.get("x-engine-secret")!==env.AUTO_ENGINE_SECRET)return new Response("Unauthorized",{status:401});
  let body:any={};try{body=await req.json();}catch{return new Response("Bad JSON",{status:400});}
  const userId=Number(body.userId);if(!Number.isSafeInteger(userId)||userId<=0)return Response.json({error:"Invalid userId"},{status:400});
  if(url.pathname==="/start"){
-  const capital=Number(body.capital);if(!Number.isFinite(capital)||capital<50||capital>10000)return Response.json({error:"Capital fictif invalide (50 à 10 000 USDT)"},{status:400});
+  const capital=Number(body.capital);if(!Number.isFinite(capital)||capital<MIN_CAPITAL||capital>MAX_CAPITAL)return Response.json({error:"Capital fictif invalide ("+MIN_CAPITAL+" à "+MAX_CAPITAL.toLocaleString("fr-FR")+" USDT)"},{status:400});
   const existing=await db`SELECT * FROM paper_auto_portfolios WHERE telegram_user_id=${userId}`;
   if(existing.length&&existing[0].status==="RUNNING")return Response.json({ok:true,alreadyRunning:true,capital:Number(existing[0].initial_capital),cash:Number(existing[0].cash),universe:universe.length});
-  await db`INSERT INTO paper_auto_portfolios(telegram_user_id,initial_capital,cash,realized_pnl,status,updated_at) VALUES(${userId},${capital},${capital},0,'RUNNING',NOW()) ON CONFLICT(telegram_user_id) DO UPDATE SET initial_capital=EXCLUDED.initial_capital,cash=EXCLUDED.cash,realized_pnl=0,status='RUNNING',updated_at=NOW()`;
+  await db`INSERT INTO paper_auto_portfolios(telegram_user_id,initial_capital,cash,realized_pnl,status,updated_at) VALUES(${userId},${capital},${capital},0,'RUNNING',NOW()) ON CONFLICT(telegram_user_id) DO UPDATE SET initial_capital=EXCLUDED.initial_capital,cash=EXCLUDED.cash,realized_pnl=0,status='RUNNING',created_at=NOW(),updated_at=NOW(),last_scan_at=NULL`;
   await db`DELETE FROM paper_auto_equity_history WHERE telegram_user_id=${userId}`;
   await db`INSERT INTO paper_auto_equity_history(telegram_user_id,session_started_at,equity,pnl) VALUES(${userId},NOW(),${capital},0)`;
   void cycle().catch(err=>console.error('Initial multi-market scan failed',err instanceof Error?err.message:String(err)));
@@ -126,11 +133,11 @@ async function handle(req:Request){
   return Response.json({ok:true,alreadyRunning:false,capital,universe:universe.length,markets:universe.map(x=>x.symbol),scanStarted:true});
  }
  if(url.pathname==="/status"){
-  const rows=await db`SELECT * FROM paper_auto_portfolios WHERE telegram_user_id=${userId}`;if(!rows.length)return Response.json({error:"Aucun portefeuille"},{status:404});
-  const a=rows[0],positions=await db`SELECT * FROM paper_auto_positions WHERE telegram_user_id=${userId} ORDER BY updated_at DESC`,trades=await db`SELECT symbol,side,quantity,price,fee,pnl,reason,created_at FROM paper_auto_trades WHERE telegram_user_id=${userId} ORDER BY created_at DESC LIMIT 20`,historyRows=await db`SELECT created_at,equity,pnl FROM paper_auto_equity_history WHERE telegram_user_id=${userId} ORDER BY created_at DESC LIMIT 240`;
+  const rows=await db`SELECT * FROM paper_auto_portfolios WHERE telegram_user_id=${userId}`;if(!rows.length)return Response.json({ok:true,status:"STOPPED",capital:0,cash:0,available:0,invested:0,realized:0,unrealized:0,equity:0,pnl:0,equityHistory:[],openPositions:0,positions:[],trades:[],universe:universe.length,markets:universe.map(x=>x.symbol),agents:universe.map(u=>agentState.get(u.symbol)||{symbol:u.symbol,type:u.type,state:"INITIALISATION"}),lastScanAt:null});
+  const a=rows[0],positions=await db`SELECT * FROM paper_auto_positions WHERE telegram_user_id=${userId} ORDER BY updated_at DESC`,trades=await db`SELECT symbol,side,quantity,price,fee,pnl,reason,created_at FROM paper_auto_trades WHERE telegram_user_id=${userId} ORDER BY created_at DESC LIMIT 50`,historyRows=await db`SELECT created_at,equity,pnl FROM paper_auto_equity_history WHERE telegram_user_id=${userId} ORDER BY created_at DESC LIMIT 240`;
   let unrealized=0;for(const x of positions)unrealized+=(Number(x.mark_price)-Number(x.entry_price))*Number(x.quantity)-Number(x.entry_fee);
   const equity=Number(a.cash)+positions.reduce((s:number,x:any)=>s+Number(x.quantity)*Number(x.mark_price),0);
-  return Response.json({ok:true,status:a.status,capital:Number(a.initial_capital),cash:Number(a.cash),realized:Number(a.realized_pnl),unrealized,equity,pnl:equity-Number(a.initial_capital),equityHistory:historyRows.reverse().map((x:any)=>({time:new Date(x.created_at).getTime(),value:Number(x.pnl),equity:Number(x.equity)})),openPositions:positions.length,positions:positions.map((x:any)=>({symbol:x.symbol,marketType:x.market_type,quantity:Number(x.quantity),entry:Number(x.entry_price),price:Number(x.mark_price),stop:Number(x.stop_price),target:Number(x.target_price)})),trades,universe:universe.length,markets:universe.map(x=>x.symbol)});
+  return Response.json({ok:true,status:a.status,capital:Number(a.initial_capital),cash:Number(a.cash),available:Number(a.cash),invested:positions.reduce((s:number,x:any)=>s+Number(x.quantity)*Number(x.mark_price),0),realized:Number(a.realized_pnl),unrealized,equity,pnl:equity-Number(a.initial_capital),equityHistory:historyRows.reverse().map((x:any)=>({time:new Date(x.created_at).getTime(),value:Number(x.pnl),equity:Number(x.equity)})),openPositions:positions.length,positions:positions.map((x:any)=>({symbol:x.symbol,marketType:x.market_type,quantity:Number(x.quantity),entry:Number(x.entry_price),price:Number(x.mark_price),stop:Number(x.stop_price),target:Number(x.target_price)})),trades,universe:universe.length,markets:universe.map(x=>x.symbol),agents:universe.map(u=>agentState.get(u.symbol)||{symbol:u.symbol,type:u.type,state:"INITIALISATION"}),lastScanAt:a.last_scan_at?new Date(a.last_scan_at).getTime():null});
  }
  if(url.pathname==="/stop"){
   const a=await db`SELECT * FROM paper_auto_portfolios WHERE telegram_user_id=${userId} AND status='RUNNING'`;if(!a.length)return Response.json({error:"Aucun portefeuille actif"},{status:404});
