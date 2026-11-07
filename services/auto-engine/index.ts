@@ -40,6 +40,23 @@ async function getMarket(item:any){
 function ema(v:number[],n:number){let x=v.slice(0,n).reduce((a,b)=>a+b,0)/n,k=2/(n+1);for(const z of v.slice(n))x=z*k+x*(1-k);return x;}
 function rsi(v:number[]){const d=v.slice(1).map((x,i)=>x-v[i]);let g=0,l=0;for(const x of d.slice(0,14)){g+=Math.max(0,x);l+=Math.max(0,-x);}g/=14;l/=14;for(const x of d.slice(14)){g=(g*13+Math.max(0,x))/14;l=(l*13+Math.max(0,-x))/14;}return l===0?(g===0?50:100):100-100/(1+g/l);}
 function atr(a:any[]){const t:number[]=[];for(let i=Math.max(1,a.length-15);i<a.length;i++)t.push(Math.max(a[i].h-a[i].l,Math.abs(a[i].h-a[i-1].c),Math.abs(a[i].l-a[i-1].c)));return t.reduce((x,y)=>x+y,0)/Math.max(1,t.length);}
+const AGENT_NAMES=["Tendance EMA","Structure EMA courte","Prix / EMA20","Prix / EMA50","RSI momentum","RSI accélération","MACD direction","MACD impulsion","Momentum 5 bougies","Momentum 10 bougies","Momentum 20 bougies","Higher highs","Higher lows","Force de bougie","Cassure du précédent high","Volatilité maîtrisée","Moyenne 20 périodes","Canal Donchian","Confirmation 3 bougies"];
+function evaluateAgents(candles:any[],closes:number[],ema20Value:number,ema50Value:number,rsiValue:number,atrValue:number,last:any,prev:any,price:number){
+ const fast=ema(closes,9),slow=ema(closes,21),macd=ema(closes,12)-ema(closes,26);
+ const prior=closes.slice(0,-1),previousMacd=ema(prior,12)-ema(prior,26);
+ const recent=candles.slice(-21,-1),high20=Math.max(...recent.map(x=>x.h)),low20=Math.min(...recent.map(x=>x.l));
+ const firstFive=closes.at(-6)||closes[0],firstTen=closes.at(-11)||closes[0],firstTwenty=closes.at(-21)||closes[0];
+ const recent5=candles.slice(-5),prior5=candles.slice(-10,-5);
+ const higherHighs=recent5.reduce((n,x)=>n+x.h,0)/5>prior5.reduce((n,x)=>n+x.h,0)/5;
+ const higherLows=recent5.reduce((n,x)=>n+x.l,0)/5>prior5.reduce((n,x)=>n+x.l,0)/5;
+ const range=Math.max(last.h-last.l,1e-12),body=(last.c-last.o)/range;
+ const positive3=candles.slice(-3).filter(x=>x.c>x.o).length>=2;
+ const mid20=closes.slice(-20).reduce((a,b)=>a+b,0)/20,donchianMid=(high20+low20)/2;
+ const votes=[ema20Value>ema50Value,fast>slow,price>ema20Value,price>ema50Value,rsiValue>=50&&rsiValue<=68,rsiValue>rsi(prior),macd>0,macd>previousMacd,price/firstFive>1.001,price/firstTen>1.002,price/firstTwenty>1.003,higherHighs,higherLows,body>0.45,last.c>prev.h,atrValue/price>=0.001&&atrValue/price<=0.03,price>mid20,price>donchianMid,positive3];
+ const agentVotes=votes.map((bullish,i)=>({name:AGENT_NAMES[i],bullish,verdict:bullish?"HAUSSIER":"NEUTRE/BAISSIER"}));
+ const bullishVotes=votes.filter(Boolean).length;
+ return {bullishVotes,totalAgents:AGENT_NAMES.length,agentVotes,consensus:bullishVotes>=12?"ACHAT":"ATTENTE"};
+}
 let cycleBusy=false;
 async function closePosition(row:any,price:number,reason:string,stop=false){
  const qty=Number(row.quantity),entry=Number(row.entry_price),entryFee=Number(row.entry_fee),exitPrice=price*(1-0.0002),gross=qty*exitPrice,fee=gross*0.0005,proceeds=gross-fee,pnl=proceeds-(qty*entry+entryFee);
@@ -55,14 +72,14 @@ async function scanPortfolio(account:any,positions:any[]){
  const uid=Number(account.telegram_user_id),now=Date.now();
  const held=new Map(positions.map((p:any)=>[p.symbol,p]));
  const results:any[]=[];let errors=0;
- for(let i=0;i<universe.length;i+=3){
-  const batch=universe.slice(i,i+3);
+ for(let i=0;i<universe.length;i+=6){
+  const batch=universe.slice(i,i+6);
   const settled=await Promise.allSettled(batch.map(getMarket));
   for(let j=0;j<settled.length;j++){
    const s=settled[j];if(s.status==="rejected"){errors++;const reason=String(s.reason);agentState.set(batch[j].symbol,{...(agentState.get(batch[j].symbol)||{}),symbol:batch[j].symbol,type:batch[j].type,state:/FERM/.test(reason)?"MARCHÉ FERMÉ":"DONNÉES INDISPONIBLES",updatedAt:Date.now()});console.warn("Market scan failed",batch[j].symbol,reason);continue;}
    const m=s.value,cs=m.candles,closes=cs.map((x:any)=>x.c),e20=ema(closes,20),e50=ema(closes,50),rv=rsi(closes),vol=atr(cs),last=cs[cs.length-1],prev=cs[cs.length-2];
-   const signal=e20>e50&&last.c>e20&&rv>=52&&rv<=68&&last.c>prev.c&&vol>0;
-   agentState.set(m.symbol,{symbol:m.symbol,type:m.type,price:m.price,ema20:e20,ema50:e50,rsi:rv,trend:e20>e50?"HAUSSIER":"BAISSIER",signal:Boolean(m.marketOpen)&&signal,state:!m.marketOpen?"MARCHÉ FERMÉ · ANALYSE HISTORIQUE":held.has(m.symbol)?"EN POSITION":signal?"SIGNAL":"ANALYSÉ · ATTENTE",changePct:(m.price/cs[0].c-1)*100,spark:cs.slice(-40).map((x:any)=>x.c),chartCandles:cs.slice(-60).map((x:any)=>({t:x.t,o:x.o,h:x.h,l:x.l,c:x.c})),dataAgeMinutes:Math.round((Number(m.dataAgeMs)||0)/60000),updatedAt:Date.now()});
+   const vote=evaluateAgents(cs,closes,e20,e50,rv,vol,last,prev,m.price);const signal=vote.bullishVotes>=12&&rv<70&&vol>0;
+   agentState.set(m.symbol,{symbol:m.symbol,type:m.type,price:m.price,ema20:e20,ema50:e50,rsi:rv,trend:e20>e50?"HAUSSIER":"BAISSIER",signal:Boolean(m.marketOpen)&&signal,score:vote.bullishVotes,agentCount:vote.totalAgents,agentVotes:vote.agentVotes,state:!m.marketOpen?"MARCHÉ FERMÉ · ANALYSE HISTORIQUE":held.has(m.symbol)?"EN POSITION":signal?"CONSENSUS ACHAT":"ANALYSÉ · ATTENTE",changePct:(m.price/cs[0].c-1)*100,spark:cs.slice(-40).map((x:any)=>x.c),chartCandles:cs.slice(-60).map((x:any)=>({t:x.t,o:x.o,h:x.h,l:x.l,c:x.c})),dataAgeMinutes:Math.round((Number(m.dataAgeMs)||0)/60000),updatedAt:Date.now()});
    results.push(m);
    // Closed markets remain analyzable from their last valid candles, but never generate paper orders or stale-price exits.
    if(!m.marketOpen)continue;
@@ -81,8 +98,9 @@ async function scanPortfolio(account:any,positions:any[]){
    if(!fresh.length||fresh[0].status!=="RUNNING")return;
    if(!signal)continue;
    const exists=await db`SELECT 1 FROM paper_auto_positions WHERE telegram_user_id=${uid} AND symbol=${m.symbol}`;if(exists.length)continue;const cooling=await db`SELECT 1 FROM paper_auto_cooldowns WHERE telegram_user_id=${uid} AND symbol=${m.symbol} AND cooldown_until>NOW()`;if(cooling.length)continue;
-   const ep=m.price*(1+0.0002),distance=vol*1.5,budget=Math.min(Number(account.initial_capital)*0.003,Number(account.cash)*0.01),qtyRisk=budget/distance,qtyCash=Number(account.cash)*0.12/ep,qty=Math.min(qtyRisk,qtyCash),notional=qty*ep,fee=notional*0.0005,cost=notional+fee;
-   if(!(qty>0&&notional>=10&&cost<=Number(account.cash)*0.2))continue;
+   const balanceRows=await db`SELECT cash FROM paper_auto_portfolios WHERE telegram_user_id=${uid} AND status='RUNNING'`;if(!balanceRows.length)continue;const availableCash=Number(balanceRows[0].cash);
+   const ep=m.price*(1+0.0002),distance=vol*1.5,budget=Math.min(Number(account.initial_capital)*0.003,availableCash*0.01),qtyRisk=budget/distance,qtyCash=availableCash*0.12/ep,qty=Math.min(qtyRisk,qtyCash),notional=qty*ep,fee=notional*0.0005,cost=notional+fee;
+   if(!(qty>0&&notional>=10&&cost<=availableCash*0.2))continue;
    const stop=ep-distance,target=ep+distance*2;
    const inserted=await db.begin(async(tx:any)=>{
     const debited=await tx`UPDATE paper_auto_portfolios SET cash=cash-${cost},updated_at=NOW() WHERE telegram_user_id=${uid} AND status='RUNNING' AND cash>=${cost} RETURNING cash`;
@@ -105,7 +123,7 @@ async function cycle(){
   for(const account of accounts){
    try{
     const positions=await db`SELECT * FROM paper_auto_positions WHERE telegram_user_id=${account.telegram_user_id}`;
-    if(account.last_scan_at&&Date.now()-new Date(account.last_scan_at).getTime()<55000&&positions.length===0)continue;
+    if(account.last_scan_at&&Date.now()-new Date(account.last_scan_at).getTime()<55000)continue;
     const result=await scanPortfolio(account,positions);
     await db`UPDATE paper_auto_portfolios SET updated_at=NOW(),last_scan_at=NOW() WHERE telegram_user_id=${account.telegram_user_id} AND status='RUNNING'`;
     const snapshot=await db`SELECT p.cash+COALESCE(SUM(pos.quantity*pos.mark_price),0) AS equity FROM paper_auto_portfolios p LEFT JOIN paper_auto_positions pos ON pos.telegram_user_id=p.telegram_user_id WHERE p.telegram_user_id=${account.telegram_user_id} AND p.status='RUNNING' GROUP BY p.telegram_user_id,p.cash`;
