@@ -132,5 +132,83 @@ export async function handlePrivateConnectorRequest(req: Request): Promise<Respo
       try { await client?.close?.(); } catch {}
     }
   }
+
+  // Strictly isolated Binance Spot Testnet order endpoint.
+  // It cannot fall back to production: sandbox mode and LIVE_TRADING_ENABLED=false are mandatory.
+  if (url.pathname === "/private/test-order" && req.method === "POST") {
+    if (String(env.BINANCE_SPOT_TESTNET || "").toLowerCase() !== "true") {
+      return json({ ok: false, error: "Ordres refusés : Binance Spot Testnet n'est pas activé." }, 403);
+    }
+    if (String(env.LIVE_TRADING_ENABLED || "").toLowerCase() === "true") {
+      return json({ ok: false, error: "Configuration incohérente : le mode réel doit rester désactivé pour ce endpoint." }, 403);
+    }
+    let body: any;
+    try { body = await req.json(); } catch { return json({ ok: false, error: "JSON invalide." }, 400); }
+    const symbol = String(body?.symbol || "").toUpperCase();
+    const side = String(body?.side || "").toLowerCase();
+    const quoteAmount = Number(body?.quoteAmount);
+    const baseAmount = Number(body?.baseAmount);
+    if (!/^[A-Z0-9]{2,15}\\/USDT$/.test(symbol)) return json({ ok: false, error: "Paire invalide. Format attendu : BTC/USDT." }, 400);
+    if (side !== "buy" && side !== "sell") return json({ ok: false, error: "Sens invalide." }, 400);
+    if (side === "buy" && (!Number.isFinite(quoteAmount) || quoteAmount <= 0 || quoteAmount > 25)) {
+      return json({ ok: false, error: "Achat Testnet limité à 25 USDT par ordre." }, 400);
+    }
+    if (side === "sell" && (!Number.isFinite(baseAmount) || baseAmount <= 0)) {
+      return json({ ok: false, error: "Quantité de vente invalide." }, 400);
+    }
+    let client: any;
+    try {
+      client = makeClient("binance");
+      await client.loadMarkets();
+      const market = client.market(symbol);
+      if (!market || market.spot !== true || market.active === false) return json({ ok: false, error: "Marché Spot indisponible." }, 400);
+      const ticker = await client.fetchTicker(symbol);
+      const price = Number(ticker?.last);
+      if (!Number.isFinite(price) || price <= 0) return json({ ok: false, error: "Prix de marché invalide." }, 502);
+      let amount: number;
+      if (side === "buy") {
+        const balance = await client.fetchBalance();
+        const freeQuote = Number(balance?.free?.USDT || 0);
+        if (freeQuote < quoteAmount) return json({ ok: false, error: "Solde USDT Testnet insuffisant.", available: freeQuote }, 409);
+        amount = Number(client.amountToPrecision(symbol, quoteAmount / price));
+      } else {
+        const balance = await client.fetchBalance();
+        const base = symbol.split("/")[0];
+        const freeBase = Number(balance?.free?.[base] || 0);
+        if (freeBase < baseAmount) return json({ ok: false, error: "Solde disponible insuffisant pour cette vente.", available: freeBase }, 409);
+        amount = Number(client.amountToPrecision(symbol, baseAmount));
+      }
+      if (!Number.isFinite(amount) || amount <= 0) return json({ ok: false, error: "Quantité arrondie invalide." }, 400);
+      const estimatedQuote = amount * price;
+      if (!Number.isFinite(estimatedQuote) || estimatedQuote <= 0 || estimatedQuote > 25.5) {
+        return json({ ok: false, error: "Valeur de l'ordre hors limite Testnet (25 USDT max)." }, 400);
+      }
+      const order = await client.createOrder(symbol, "market", side, amount);
+      return json({
+        ok: true,
+        environment: "binance-spot-testnet",
+        simulatedFunds: true,
+        tradingEnabled: false,
+        order: {
+          id: order.id || null,
+          symbol,
+          side,
+          type: order.type || "market",
+          amount: Number(order.amount || amount),
+          filled: Number(order.filled || 0),
+          average: Number(order.average || 0),
+          status: order.status || "submitted",
+        },
+        message: "Ordre envoyé exclusivement à Binance Spot Testnet. Aucun argent réel n'a été engagé.",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erreur Binance Testnet inconnue.";
+      console.warn("Binance Testnet order failed", message.slice(0, 180));
+      return json({ ok: false, environment: "binance-spot-testnet", error: "Ordre Testnet refusé. Vérifie les clés Testnet, le solde et les filtres de marché." }, 502);
+    } finally {
+      try { await client?.close?.(); } catch {}
+    }
+  }
+
   return json({ ok: false, error: "Route privée inconnue." }, 404);
 }
