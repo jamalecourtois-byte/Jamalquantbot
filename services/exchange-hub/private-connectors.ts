@@ -82,20 +82,38 @@ function makeClient(id: string) {
 }
 
 async function findTestnetOrderByClientId(client: any, market: any, clientOrderId: string, fallbackSide: string) {
-  try {
-    const raw = await client.request("order", "private", "GET", { symbol: market.id, origClientOrderId: clientOrderId });
-    return typeof client.parseOrder === "function" ? client.parseOrder(raw, market) : {
-      id: raw.orderId, clientOrderId: raw.clientOrderId, status: String(raw.status || "").toLowerCase(),
-      amount: Number(raw.origQty || 0), filled: Number(raw.executedQty || 0),
-      average: Number(raw.price || 0), cost: Number(raw.cummulativeQuoteQty || 0),
-      type: String(raw.type || "market").toLowerCase(), side: String(raw.side || fallbackSide).toLowerCase(),
-    };
-  } catch (error) {
-    const name = error instanceof Error ? error.name : "";
-    const message = error instanceof Error ? error.message : String(error);
-    if (name === "OrderNotFound" || /-2013|order does not exist|order not found/i.test(message)) return null;
-    throw new Error("ORDER_LOOKUP_UNCERTAIN");
+  // Binance Spot Testnet's signed REST endpoint. Do not route this through
+  // CCXT request() URL resolution: that path selects unsupported sandbox endpoints.
+  const baseUrl = "https://testnet.binance.vision/api/v3/order";
+  const params = new URLSearchParams({
+    symbol: market.id,
+    origClientOrderId: clientOrderId,
+    recvWindow: "5000",
+    timestamp: String(Date.now()),
+  });
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw", encoder.encode(String(client.secret)),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(params.toString()));
+  const signatureHex = Array.from(new Uint8Array(signature), b => b.toString(16).padStart(2, "0")).join("");
+  const response = await fetch(baseUrl + "?" + params.toString() + "&signature=" + signatureHex, {
+    method: "GET",
+    headers: { "X-MBX-APIKEY": String(client.apiKey) },
+    signal: AbortSignal.timeout(10000),
+  });
+  const raw: any = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    if (Number(raw?.code) === -2013) return null;
+    throw new Error("BINANCE_TESTNET_ORDER_LOOKUP_FAILED: " + String(raw?.msg || response.status));
   }
+  return typeof client.parseOrder === "function" ? client.parseOrder(raw, market) : {
+    id: raw.orderId, clientOrderId: raw.clientOrderId, status: String(raw.status || "").toLowerCase(),
+    amount: Number(raw.origQty || 0), filled: Number(raw.executedQty || 0),
+    average: Number(raw.price || 0), cost: Number(raw.cummulativeQuoteQty || 0),
+    type: String(raw.type || "market").toLowerCase(), side: String(raw.side || fallbackSide).toLowerCase(),
+  };
 }
 
 function prefixFor(id: string) { return "EXCHANGE_" + id.toUpperCase() + "_"; }
@@ -211,18 +229,7 @@ export async function handlePrivateConnectorRequest(req: Request): Promise<Respo
       // before any retry. Only a definite "not found" permits a new submission.
       let order: any = null;
       try {
-        // Binance GET /api/v3/order accepts origClientOrderId without orderId.
-        // Use CCXT's signed raw request because unified fetchOrder requires an exchange order id.
-        const raw = await client.request("order", "private", "GET", {
-          symbol: market.id,
-          origClientOrderId: clientOrderId,
-        });
-        order = typeof client.parseOrder === "function" ? client.parseOrder(raw, market) : {
-          id: raw.orderId, clientOrderId: raw.clientOrderId, status: String(raw.status || "").toLowerCase(),
-          amount: Number(raw.origQty || 0), filled: Number(raw.executedQty || 0),
-          average: Number(raw.price || 0), cost: Number(raw.cummulativeQuoteQty || 0),
-          type: String(raw.type || "market").toLowerCase(), side: String(raw.side || side).toLowerCase(),
-        };
+        order = await findTestnetOrderByClientId(client, market, clientOrderId, side);
       } catch (lookupError) {
         const name = lookupError instanceof Error ? lookupError.name : "";
         const message = lookupError instanceof Error ? lookupError.message : String(lookupError);
