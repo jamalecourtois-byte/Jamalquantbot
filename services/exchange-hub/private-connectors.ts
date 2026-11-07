@@ -48,7 +48,7 @@ function makeClient(id: string) {
   if (!creds) throw new Error("Identifiants non configurés pour cette plateforme.");
   const Constructor = (ccxt as any)[id];
   if (typeof Constructor !== "function") throw new Error("Adaptateur CCXT indisponible.");
-  return new Constructor({
+  const client = new Constructor({
     apiKey: creds.apiKey,
     secret: creds.secret,
     ...(creds.password ? { password: creds.password } : {}),
@@ -57,6 +57,12 @@ function makeClient(id: string) {
     timeout: 15000,
     options: { defaultType: env[prefixFor(id) + "DEFAULT_TYPE"] || "spot" },
   });
+  // Binance Spot Testnet is opt-in and remains the default validation path.
+  if (id === "binance" && String(env.BINANCE_SPOT_TESTNET || "").toLowerCase() === "true") {
+    if (typeof client.setSandboxMode !== "function") throw new Error("Mode sandbox Binance indisponible dans CCXT.");
+    client.setSandboxMode(true);
+  }
+  return client;
 }
 function prefixFor(id: string) { return "EXCHANGE_" + id.toUpperCase() + "_"; }
 
@@ -87,6 +93,8 @@ export async function handlePrivateConnectorRequest(req: Request): Promise<Respo
       regionalNote: "Pour un compte OKX EEE/Europe, utiliser l’adaptateur CCXT myokx et des identifiants API créés sur le compte OKX Europe. Le mot de passe API (passphrase) est obligatoire. Les identifiants okx global et myokx EEE sont distincts.",
       tradingEnabled: false,
       orderPlacement: "disabled",
+      binanceSpotTestnet: String(env.BINANCE_SPOT_TESTNET || "").toLowerCase() === "true",
+      liveTradingEnabled: String(env.LIVE_TRADING_ENABLED || "").toLowerCase() === "true",
     });
   }
 
@@ -113,6 +121,7 @@ export async function handlePrivateConnectorRequest(req: Request): Promise<Respo
         timestamp: Date.now(),
         assets,
         tradingEnabled: false,
+        environment: id === "binance" && String(env.BINANCE_SPOT_TESTNET || "").toLowerCase() === "true" ? "binance-spot-testnet" : "production-read-only",
         note: "Connexion privée en lecture seule. Aucun ordre ne peut être envoyé par cette API.",
       });
     } catch (error) {
