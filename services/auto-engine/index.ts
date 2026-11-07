@@ -129,7 +129,7 @@ async function testnetOrder(uid:number,symbol:string,side:"buy"|"sell",amount:nu
  const existing=await db`SELECT * FROM testnet_auto_orders WHERE client_order_id=${clientOrderId}`;
  const payload=side==="buy"?{symbol:normalized,side,quoteAmount:amount,clientOrderId}:{symbol:normalized,side,baseAmount:amount,clientOrderId};
  const result=await testnetRequest("/private/test-order",payload),o=result.order||{};
- await db`INSERT INTO testnet_auto_orders(telegram_user_id,client_order_id,exchange_order_id,symbol,side,quantity,filled,average,cost,status,reason,requested_amount,candle_time) VALUES(${uid},${clientOrderId},${String(o.id||"")},${normalized},${side.toUpperCase()},${Number(o.amount||0)},${Number(o.filled||0)},${Number(o.average||0)},${Number(o.cost||0)},${String(o.status||"submitted")},${reason},${amount},${candleTime}) ON CONFLICT(client_order_id) DO UPDATE SET exchange_order_id=EXCLUDED.exchange_order_id,quantity=EXCLUDED.quantity,filled=EXCLUDED.filled,average=EXCLUDED.average,cost=EXCLUDED.cost,status=EXCLUDED.status`;
+ await db`INSERT INTO testnet_auto_orders(telegram_user_id,client_order_id,exchange_order_id,symbol,side,quantity,filled,average,cost,status,reason,requested_amount,candle_time) VALUES(${uid},${clientOrderId},${String(o.id||"")},${normalized},${side.toUpperCase()},${Number(o.amount||0)},${Number(o.filled||0)},${Number(o.average||0)},${Number(o.cost||0)},${String(o.status||"orderRequests")},${reason},${amount},${candleTime}) ON CONFLICT(client_order_id) DO UPDATE SET exchange_order_id=EXCLUDED.exchange_order_id,quantity=EXCLUDED.quantity,filled=EXCLUDED.filled,average=EXCLUDED.average,cost=EXCLUDED.cost,status=EXCLUDED.status`;
  return {clientOrderId,...o};
 }
 async function scanTestnetAccount(account:any){
@@ -139,7 +139,7 @@ async function scanTestnetAccount(account:any){
  if(accountData.environment!=="binance-spot-testnet"||accountData.accountConnected!==true)throw new Error("Compte Binance Spot Testnet non confirmé.");
  const usdt=Number((accountData.assets||[]).find((x:any)=>x.asset==="USDT")?.total||0),orderBudget=Math.min(25,usdt*0.10);
  await warmNews(cryptoMarkets);
- let scanned=0,errors=0,orders=0,signals=0,consensusRejected=0,riskRejected=0,submitted=0,pendingOrders=0,cooldownSkipped=0,positionLimitSkipped=0,budgetSkipped=0;const gateSummary:any[]=[];
+ let scanned=0,errors=0,orders=0,signals=0,consensusRejected=0,riskRejected=0,orderRequests=0,pendingOrders=0,cooldownSkipped=0,positionLimitSkipped=0,budgetSkipped=0;const gateSummary:any[]=[];
  for(const item of cryptoMarkets){
   try{
    const m=await getMarket(item),cs=m.candles,closes=cs.map((x:any)=>x.c),e20=ema(closes,20),e50=ema(closes,50),rv=rsi(closes),vol=atr(cs),last=cs[cs.length-1],prev=cs[cs.length-2];
@@ -152,7 +152,7 @@ async function scanTestnetAccount(account:any){
    const pendingRows=await db`SELECT * FROM testnet_auto_orders WHERE telegram_user_id=${uid} AND symbol=${m.symbol.replace(/USDT$/,"/USDT")} AND status NOT IN ('closed','filled','canceled','rejected') ORDER BY created_at DESC LIMIT 1`;
    if(pendingRows.length){
     const po=pendingRows[0],side=String(po.side).toLowerCase()==="buy"?"buy":"sell";
-    const refreshed=await testnetOrder(uid,m.symbol,side,Number(po.requested_amount),String(po.reason),Number(po.candle_time));submitted++;
+    const refreshed=await testnetOrder(uid,m.symbol,side,Number(po.requested_amount),String(po.reason),Number(po.candle_time));orderRequests++;
     const filled=Number(refreshed.filled||0),average=Number(refreshed.average||0),status=String(refreshed.status||"").toLowerCase();
     if(filled>0&&average>0&&["closed","filled"].includes(status)){
      if(side==="buy"){
@@ -174,7 +174,7 @@ async function scanTestnetAccount(account:any){
     const p=posRows[0],high=Math.max(Number(p.highest_price),m.price),exit=m.price<=Number(p.stop_price)||m.price>=Number(p.target_price)||e20<e50||rv<45;
     await db`UPDATE testnet_auto_positions SET highest_price=${high},updated_at=NOW() WHERE telegram_user_id=${uid} AND symbol=${m.symbol}`;
     if(exit){
-     const result=await testnetOrder(uid,m.symbol,"sell",Number(p.quantity),m.price<=Number(p.stop_price)?"STOP_LOSS":m.price>=Number(p.target_price)?"TAKE_PROFIT":"SIGNAL_INVALIDATED",last.t);submitted++;
+     const result=await testnetOrder(uid,m.symbol,"sell",Number(p.quantity),m.price<=Number(p.stop_price)?"STOP_LOSS":m.price>=Number(p.target_price)?"TAKE_PROFIT":"SIGNAL_INVALIDATED",last.t);orderRequests++;
      const filled=Number(result.filled||0),average=Number(result.average||m.price);
      if(filled>0&&["closed","filled"].includes(String(result.status||"").toLowerCase())){
       await db`DELETE FROM testnet_auto_positions WHERE telegram_user_id=${uid} AND symbol=${m.symbol}`;
@@ -194,7 +194,7 @@ async function scanTestnetAccount(account:any){
    if(Number(count[0]?.n||0)>=2){positionLimitSkipped++;continue;}
    const budget=orderBudget;
    if(budget<10){budgetSkipped++;continue;}
-   const result=await testnetOrder(uid,m.symbol,"buy",budget,"EMA_RSI_CONSENSUS",last.t);submitted++;
+   const result=await testnetOrder(uid,m.symbol,"buy",budget,"EMA_RSI_CONSENSUS",last.t);orderRequests++;
    const filled=Number(result.filled||0),average=Number(result.average||0),status=String(result.status||"").toLowerCase();
    if(filled>0&&average>0&&["closed","filled"].includes(status)){
     const distance=vol*1.5,stop=average-distance,target=average+distance*2;
@@ -205,7 +205,7 @@ async function scanTestnetAccount(account:any){
   }catch(err){errors++;console.warn("Testnet scan failed",item.symbol,err instanceof Error?err.message:String(err));}
  }
  await db`UPDATE testnet_auto_accounts SET last_scan_at=NOW(),updated_at=NOW() WHERE telegram_user_id=${uid} AND status='RUNNING'`;
- return {scanned,errors,signals,consensusRejected,riskRejected,submitted,pendingOrders,cooldownSkipped,positionLimitSkipped,budgetSkipped,orders,orderBudget,usdt,gateSummary};
+ return {scanned,errors,signals,consensusRejected,riskRejected,orderRequests,pendingOrders,cooldownSkipped,positionLimitSkipped,budgetSkipped,orders,orderBudget,usdt,gateSummary};
 }
 async function testnetCycle(){
  if(testnetCycleBusy)return {testnetBusy:true};
