@@ -52,16 +52,23 @@ if(url.pathname==="/miniapp/auto"&&request.method==="POST"){
    return corsJson({ok:true,data:result});
   }
   if(action==="auto_start"){
+   const admins=String(env.CONNECTOR_ADMIN_TELEGRAM_IDS||"").split(",").map((x:string)=>x.trim()).filter(Boolean);
+   if(admins.includes(String(userId))){
+    const result=await callAutoEngine("/testnet/start",{userId});
+    return corsJson({ok:true,...result,data:result});
+   }
    const capital=Number(body.capital);if(!Number.isFinite(capital)||capital<100||capital>1000000)return corsJson({ok:false,error:"Capital fictif compris entre 100 et 1 000 000 USDT."},{status:400});
    const result=await callAutoEngine("/start",{userId,symbol:"AUTO",capital});
    return corsJson({ok:true,...result,data:result});
   }
   if(action==="auto_status"){
-   const result=await callAutoEngine("/status",{userId});
+   const admins=String(env.CONNECTOR_ADMIN_TELEGRAM_IDS||"").split(",").map((x:string)=>x.trim()).filter(Boolean);
+   const result=admins.includes(String(userId))?await callAutoEngine("/testnet/status",{userId}):await callAutoEngine("/status",{userId});
    return corsJson({ok:true,data:result});
   }
   if(action==="auto_stop"){
-   const result=await callAutoEngine("/stop",{userId});
+   const admins=String(env.CONNECTOR_ADMIN_TELEGRAM_IDS||"").split(",").map((x:string)=>x.trim()).filter(Boolean);
+   const result=admins.includes(String(userId))?await callAutoEngine("/testnet/stop",{userId}):await callAutoEngine("/stop",{userId});
    return corsJson({ok:true,...result,data:result});
   }
   return corsJson({ok:false,error:"Action Mini App inconnue."},{status:400});
