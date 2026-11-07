@@ -173,7 +173,18 @@ export async function handlePrivateConnectorRequest(req: Request): Promise<Respo
       // before any retry. Only a definite "not found" permits a new submission.
       let order: any = null;
       try {
-        order = await client.fetchOrder(undefined, symbol, { origClientOrderId: clientOrderId });
+        // Binance GET /api/v3/order accepts origClientOrderId without orderId.
+        // Use CCXT's signed raw request because unified fetchOrder requires an exchange order id.
+        const raw = await client.request("order", "private", "GET", {
+          symbol: market.id,
+          origClientOrderId: clientOrderId,
+        });
+        order = typeof client.parseOrder === "function" ? client.parseOrder(raw, market) : {
+          id: raw.orderId, clientOrderId: raw.clientOrderId, status: String(raw.status || "").toLowerCase(),
+          amount: Number(raw.origQty || 0), filled: Number(raw.executedQty || 0),
+          average: Number(raw.price || 0), cost: Number(raw.cummulativeQuoteQty || 0),
+          type: String(raw.type || "market").toLowerCase(), side: String(raw.side || side).toLowerCase(),
+        };
       } catch (lookupError) {
         const name = lookupError instanceof Error ? lookupError.name : "";
         const message = lookupError instanceof Error ? lookupError.message : String(lookupError);
@@ -197,7 +208,7 @@ export async function handlePrivateConnectorRequest(req: Request): Promise<Respo
           // quoteOrderQty makes the spend limit exact in quote currency (USDT).
           order = await client.createOrder(symbol, "market", "buy", undefined, undefined, {
             quoteOrderQty: quoteAmount,
-            clientOrderId,
+            newClientOrderId: clientOrderId,
           });
         } else {
           const base = symbol.split("/")[0];
@@ -209,7 +220,7 @@ export async function handlePrivateConnectorRequest(req: Request): Promise<Respo
           if (!Number.isFinite(estimatedQuote) || estimatedQuote <= 0 || estimatedQuote > 50.5) {
             return json({ ok: false, error: "Valeur de vente supérieure à 50 USDT sur Testnet." }, 400);
           }
-          order = await client.createOrder(symbol, "market", "sell", amount, undefined, { clientOrderId });
+          order = await client.createOrder(symbol, "market", "sell", amount, undefined, { newClientOrderId: clientOrderId });
         }
       }
 
