@@ -173,7 +173,7 @@ async function handle(req:Request){
   return Response.json({ok:true,status:a.status,capital:Number(a.initial_capital),cash:Number(a.cash),available:Number(a.cash),invested:positions.reduce((s:number,x:any)=>s+Number(x.quantity)*Number(x.mark_price),0),realized:Number(a.realized_pnl),unrealized,equity,pnl:equity-Number(a.initial_capital),equityHistory:historyRows.reverse().map((x:any)=>({time:new Date(x.created_at).getTime(),value:Number(x.pnl),equity:Number(x.equity)})),openPositions:positions.length,positions:positions.map((x:any)=>({symbol:x.symbol,marketType:x.market_type,quantity:Number(x.quantity),entry:Number(x.entry_price),price:Number(x.mark_price),stop:Number(x.stop_price),target:Number(x.target_price)})),trades,universe:universe.length,markets:universe.map(x=>x.symbol),agents:universe.map(u=>agentState.get(u.symbol)||{symbol:u.symbol,type:u.type,state:"INITIALISATION"}),lastScanAt:a.last_scan_at?new Date(a.last_scan_at).getTime():null});
  }
  if(url.pathname==="/stop"){
-  const a=await db`SELECT * FROM paper_auto_portfolios WHERE telegram_user_id=${userId} AND status='RUNNING'`;if(!a.length)return Response.json({error:"Aucun portefeuille actif"},{status:404});
+  const a=await db`SELECT * FROM paper_auto_portfolios WHERE telegram_user_id=${userId} AND status='RUNNING'`;if(!a.length)return Response.json({ok:true,stopped:true,alreadyStopped:true,closedPositions:0});
   await db`UPDATE paper_auto_portfolios SET status='STOPPED',updated_at=NOW() WHERE telegram_user_id=${userId}`;
   const positions=await db`SELECT * FROM paper_auto_positions WHERE telegram_user_id=${userId}`;
   for(const x of positions)await closePosition(x,Number(x.mark_price),"Arrêt demandé",true);
