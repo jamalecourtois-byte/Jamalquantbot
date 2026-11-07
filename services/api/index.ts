@@ -37,7 +37,7 @@ const BINANCE_INTERVALS=["1m","3m","5m","15m","30m","1h","2h","4h","6h","8h","12
    fetch(base+"/dashboard",{signal:AbortSignal.timeout(10000)})
   ]);
   const cj:any=await c1.json().catch(()=>({})),rj:any=await rr.json().catch(()=>({}));
-  checks.connectors=Number(cj.count||0);checks.brokerConnectors=Number(cj.brokerCount||0);
+  checks.connectors=Number(cj.count||0);checks.brokerConnectors=Number(cj.brokerCount||0);checks.privateConnectorAuth=false;checks.configuredPrivateExchanges=0;checks.telegramConnectorAdminConfigured=String(env.CONNECTOR_ADMIN_TELEGRAM_IDS||"").split(",").some((x:string)=>x.trim().length>0);if(env.CONNECTOR_ADMIN_TOKEN){try{const pr=await fetch(base+"/private/connectors",{headers:{"authorization":"Bearer "+env.CONNECTOR_ADMIN_TOKEN},signal:AbortSignal.timeout(10000)});const pj:any=await pr.json().catch(()=>({}));checks.privateConnectorAuth=!!(pr.ok&&pj.ok);checks.configuredPrivateExchanges=Array.isArray(pj.configured)?pj.configured.length:0;}catch(error){console.warn("Private connector health check failed:",error instanceof Error?error.message:String(error));}}
   checks.symbolResolution=!!(rr.ok&&rj.ok&&rj.symbol);checks.resolveError=checks.symbolResolution?null:(rj.error||"HTTP "+rr.status);
   let ticker:any={},ohlcv:any={},tr:Response|undefined,or:Response|undefined;
   if(checks.symbolResolution){
