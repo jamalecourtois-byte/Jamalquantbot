@@ -6,7 +6,7 @@
 </style></head><body>
 <header><div class="brand">JAMALQUANT <i>WALLET</i></div><a href="/">← RETOUR AU TERMINAL</a></header>
 <main><div class="eyebrow">PORTEFEUILLE AUTONOME · AUTO-CUSTODY</div><div class="title">Ton wallet multi-chaînes</div><div class="muted">Une phrase de récupération génère tes adresses EVM et Solana. Les clés sont créées et conservées dans ton navigateur : elles ne sont jamais envoyées au serveur JamalQuant.</div>
-<section class="panel" id="startPanel"><div class="row"><div><b>Créer un nouveau portefeuille</b><div class="muted">Génération locale d'une phrase secrète de 12 mots.</div></div><button class="btn primary" id="create">CRÉER MON WALLET</button></div><div class="status" id="startStatus"></div></section>
+<section class="panel" id="startPanel"><div class="row"><div><b>Créer un nouveau portefeuille</b><div class="muted">Génération locale d'une phrase secrète de 12 mots.</div></div><button class="btn primary" id="create" onclick="window.createWallet()">CRÉER MON WALLET</button></div><div class="status" id="startStatus"></div></section>
 <section class="panel hidden" id="walletPanel"><div class="row"><div><b>Portefeuille actif</b><span class="muted" id="walletState"> · créé localement</span></div><button class="btn" id="refresh">ACTUALISER LES SOLDES</button></div>
 <div class="networks">
 <div class="net"><b>Ethereum</b><small>ETH · EVM</small><div class="balance" id="bal-eth">—</div></div>
@@ -21,22 +21,18 @@
 <div class="notice">Cette première version crée les clés et affiche les soldes natifs via des RPC publics. Elle n'envoie pas encore de transactions et ne donne pas au bot accès aux clés. N'envoie aucun fonds avant d'avoir sauvegardé et vérifié la phrase de récupération dans un wallet compatible indépendant.</div>
 <div class="status" id="walletStatus">Prêt.</div></section>
 </main>
-<script type="module">
-import { Wallet } from "https://esm.sh/ethers@6.15.0";
-import { generateMnemonic, mnemonicToSeedSync } from "https://esm.sh/@scure/bip39@1.6.0";
-import { wordlist } from "https://esm.sh/@scure/bip39@1.6.0/wordlists/english";
-import { derivePath } from "https://esm.sh/ed25519-hd-key@1.3.0";
-import { Keypair } from "https://esm.sh/@solana/web3.js@1.98.4";
-import bs58 from "https://esm.sh/bs58@6.0.0";
-const $=id=>document.getElementById(id);let secrets=null, phrase=null;
-const networks=[
-{id:"eth",symbol:"ETH",rpc:"https://cloudflare-eth.com",method:"eth_getBalance",params:a=>[a,"latest"],format:v=>(Number(BigInt(v))/1e18).toFixed(6)},
-{id:"bnb",symbol:"BNB",rpc:"https://bsc-dataseed.binance.org",method:"eth_getBalance",params:a=>[a,"latest"],format:v=>(Number(BigInt(v))/1e18).toFixed(6)},
-{id:"pol",symbol:"POL",rpc:"https://polygon-bor-rpc.publicnode.com",method:"eth_getBalance",params:a=>[a,"latest"],format:v=>(Number(BigInt(v))/1e18).toFixed(6)}];
+<script>
+const $=id=>document.getElementById(id);let secrets=null;
+const networks=[{id:"eth",symbol:"ETH",rpc:"https://cloudflare-eth.com",format:v=>(Number(BigInt(v))/1e18).toFixed(6)},{id:"bnb",symbol:"BNB",rpc:"https://bsc-dataseed.binance.org",format:v=>(Number(BigInt(v))/1e18).toFixed(6)},{id:"pol",symbol:"POL",rpc:"https://polygon-bor-rpc.publicnode.com",format:v=>(Number(BigInt(v))/1e18).toFixed(6)}];
 async function rpc(url,method,params){const r=await fetch(url,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({jsonrpc:"2.0",id:1,method,params}),signal:AbortSignal.timeout(12000)});const j=await r.json();if(!r.ok||j.error)throw Error(j.error?.message||"RPC indisponible");return j.result}
 function showStatus(s){$("walletStatus").textContent=s}
-$("create").addEventListener("click",async()=>{try{$("create").disabled=true;$("startStatus").textContent="Génération cryptographique locale…";phrase=generateMnemonic(wordlist,128);const evm=Wallet.fromPhrase(phrase);const seed=mnemonicToSeedSync(phrase);const path="m/44'/501'/0'/0'";const derived=derivePath(path,Array.from(seed,b=>b.toString(16).padStart(2,"0")).join(""));const sol=Keypair.fromSeed(derived.key);secrets={phrase,evmPrivate:evm.privateKey,solPrivate:bs58.encode(sol.secretKey)};$("evmAddress").textContent=evm.address;$("solAddress").textContent=sol.publicKey.toBase58();$("startPanel").classList.add("hidden");$("walletPanel").classList.remove("hidden");$("secrets").textContent="PHRASE DE RÉCUPÉRATION (12 MOTS)\n"+phrase+"\n\nCLÉ PRIVÉE EVM\n"+evm.privateKey+"\n\nCLÉ PRIVÉE SOLANA (BASE58)\n"+secrets.solPrivate+"\n\nDérivation Solana : "+path;$("walletStatus").textContent="Wallet créé dans ce navigateur. Sauvegarde la phrase avant toute utilisation.";await balances()}catch(e){$("startStatus").textContent="Échec : "+e.message;$("create").disabled=false}});
-async function balances(){if(!secrets)return;showStatus("Lecture des soldes sur les réseaux publics…");for(const n of networks){try{$("bal-"+n.id).textContent=n.format(await rpc(n.rpc,n.method,n.params($("evmAddress").textContent)))+" "+n.symbol}catch{$("bal-"+n.id).textContent="Indisponible"}}try{const lamports=await rpc("https://api.mainnet-beta.solana.com","getBalance",[$("solAddress").textContent]);$("bal-sol").textContent=(Number(lamports.value)/1e9).toFixed(6)+" SOL"}catch{$("bal-sol").textContent="Indisponible"}showStatus("Soldes actualisés. Les jetons autres que les actifs natifs ne sont pas encore affichés.");}
-$("refresh").addEventListener("click",balances);$("reveal").addEventListener("click",()=>{$("secrets").style.display="block";$("secrets").scrollIntoView({behavior:"smooth",block:"center"})});$("hide").addEventListener("click",()=>$("secrets").style.display="none");
-document.querySelectorAll("[data-copy]").forEach(b=>b.addEventListener("click",async()=>{await navigator.clipboard.writeText($(b.dataset.copy).textContent);showStatus("Adresse copiée.")}));
+window.createWallet=async function(){const button=$("create");button.disabled=true;$("startStatus").textContent="Initialisation du moteur du wallet…";try{
+const [ethers,bip39,wordlists,hd,solana,bs58mod]=await Promise.all([
+import("https://esm.sh/ethers@6.15.0?bundle"),import("https://esm.sh/@scure/bip39@1.6.0?bundle"),import("https://esm.sh/@scure/bip39@1.6.0/wordlists/english?bundle"),import("https://esm.sh/ed25519-hd-key@1.3.0?bundle"),import("https://esm.sh/@solana/web3.js@1.98.4?bundle"),import("https://esm.sh/bs58@6.0.0?bundle")]);
+$("startStatus").textContent="Création cryptographique locale…";const phrase=bip39.generateMnemonic(wordlists.wordlist,128);const evm=ethers.Wallet.fromPhrase(phrase);const seed=bip39.mnemonicToSeedSync(phrase);const path="m/44'/501'/0'/0'";const derived=hd.derivePath(path,Array.from(seed,b=>b.toString(16).padStart(2,"0")).join(""));const sol=solana.Keypair.fromSeed(derived.key);const bs58=bs58mod.default||bs58mod;secrets={phrase,evmPrivate:evm.privateKey,solPrivate:bs58.encode(sol.secretKey)};
+$("evmAddress").textContent=evm.address;$("solAddress").textContent=sol.publicKey.toBase58();$("secrets").textContent="PHRASE DE RÉCUPÉRATION (12 MOTS)\n"+phrase+"\n\nCLÉ PRIVÉE EVM\n"+evm.privateKey+"\n\nCLÉ PRIVÉE SOLANA (BASE58)\n"+secrets.solPrivate+"\n\nDérivation Solana : "+path;$("startPanel").classList.add("hidden");$("walletPanel").classList.remove("hidden");showStatus("Wallet créé localement. Sauvegarde la phrase avant toute utilisation.");await balances();
+}catch(e){$("startStatus").textContent="Le moteur n'a pas pu démarrer : "+(e&&e.message?e.message:String(e))+". Vérifie la connexion puis réessaie.";button.disabled=false;console.error("Wallet init error",e)}};
+async function balances(){if(!secrets)return;showStatus("Lecture des soldes sur les réseaux publics…");for(const n of networks){try{const v=await rpc(n.rpc,"eth_getBalance",[$("evmAddress").textContent,"latest"]);$("bal-"+n.id).textContent=n.format(v)+" "+n.symbol}catch{$("bal-"+n.id).textContent="Indisponible"}}try{const v=await rpc("https://api.mainnet-beta.solana.com","getBalance",[$("solAddress").textContent]);$("bal-sol").textContent=(Number(v.value)/1e9).toFixed(6)+" SOL"}catch{$("bal-sol").textContent="Indisponible"}showStatus("Soldes actualisés. Les jetons autres que les actifs natifs ne sont pas encore affichés.")}
+$("refresh").addEventListener("click",balances);$("reveal").addEventListener("click",()=>{$("secrets").style.display="block";$("secrets").scrollIntoView({behavior:"smooth",block:"center"})});$("hide").addEventListener("click",()=>{$("secrets").style.display="none"});
+document.querySelectorAll("[data-copy]").forEach(b=>b.addEventListener("click",async()=>{try{await navigator.clipboard.writeText($(b.dataset.copy).textContent);showStatus("Adresse copiée.")}catch{showStatus("Copie bloquée par le navigateur. Sélectionne l'adresse manuellement.")}}));
 </script></body></html>
