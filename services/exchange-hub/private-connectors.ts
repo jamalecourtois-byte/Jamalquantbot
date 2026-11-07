@@ -32,11 +32,14 @@ function credentials(id: string) {
   const prefix = "EXCHANGE_" + id.toUpperCase() + "_";
   const apiKey = env[prefix + "API_KEY"];
   const secret = env[prefix + "API_SECRET"];
+  const password = env[prefix + "PASSWORD"];
   if (!apiKey || !secret) return null;
+  // OKX EEA (CCXT myokx) requires its own regional API key and passphrase.
+  if ((id === "okx" || id === "myokx") && !password) return null;
   return {
     apiKey,
     secret,
-    password: env[prefix + "PASSWORD"],
+    password,
     uid: env[prefix + "UID"],
   };
 }
@@ -79,7 +82,9 @@ export async function handlePrivateConnectorRequest(req: Request): Promise<Respo
       totalSupported: ccxt.exchanges.length,
       configured,
       available: ccxt.exchanges.filter((id: string) => typeof (ccxt as any)[id] === "function"),
-      permissionsRequired: "Clé API de lecture seule recommandée. Retraits désactivés sur la plateforme.",
+      permissionsRequired: "Clé API de lecture seule recommandée. Retraits et transferts désactivés sur la plateforme.",
+      recommendedForEEA: "myokx",
+      regionalNote: "Pour un compte OKX EEE/Europe, utiliser l’adaptateur CCXT myokx et des identifiants API créés sur le compte OKX Europe. Le mot de passe API (passphrase) est obligatoire. Les identifiants okx global et myokx EEE sont distincts.",
       tradingEnabled: false,
       orderPlacement: "disabled",
     });
