@@ -85,7 +85,7 @@ async function loadAllMarketCharts(){
   card.querySelector("small:last-child").textContent=money(Number.isFinite(live)&&live>0?live:vals.at(-1))+" · "+(d.count||vals.length)+" bougies · "+(ticker.source||d.source||"données marché");
   loaded++;
  })).then(results=>{results.forEach((r,j)=>{if(r.status==="rejected"){failed++;const symbol=marketSymbols[i+j],card=$("market-"+symbol);if(card){card.querySelector(".agentline small").textContent="INDISPONIBLE";card.querySelector("small:last-child").textContent=String(r.reason?.message||"Source marché indisponible").slice(0,100);}}});});}
- $("marketStatus").textContent=loaded+" marchés actualisés avec cours réels"+(failed?" · "+failed+" indisponibles":"")+" · dernière mise à jour "+new Date().toLocaleTimeString("fr-FR");
+ $("marketStatus").textContent=loaded+" marchés actualisés avec cours réels"+(failed?" · "+failed+" indisponibles":"")+" · dernière mise à jour "+new Date().toLocaleTimeString("fr-FR");chart();
  }finally{marketChartsBusy=false;}
 }
 async function loadMarketPreview(){await loadAllMarketCharts();}
