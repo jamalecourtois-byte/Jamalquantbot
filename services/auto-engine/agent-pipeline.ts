@@ -25,8 +25,11 @@ const wordSets=[
 export async function warmNews(items:Market[]){await Promise.all(items.map(item=>headlines(item)));}
 function sentiment(titles:string[],set:number){let score=0;for(const title of titles){const t=title.toLowerCase();for(const w of wordSets[set].up)if(t.includes(w))score++;for(const w of wordSets[set].down)if(t.includes(w))score--;}return clamp(score,-8,8);}
 function backtest(c:Candle[],variant:number){
- const closes=c.map(x=>x.c),outcomes:number[]=[];const first=c.length-113,last=first+99;
- for(let i=first;i<=last&&outcomes.length<100;i++){
+ const closes=c.map(x=>x.c),outcomes:number[]=[];
+ // Use a longer rolling sample when the feed provides it; keep a valid EMA warm-up
+ // and reserve 12 future candles to resolve each simulated trade.
+ const runs=Math.min(500,Math.max(0,c.length-63)),first=c.length-runs-13,last=first+runs-1;
+ for(let i=first;i<=last;i++){
   const history=closes.slice(0,i+1),fast=ema(history,variant===0?9:variant===1?12:variant===2?20:variant===3?8:14),slow=ema(history,variant===0?21:variant===1?26:variant===2?50:variant===3?18:34);
   const rv=rsi(closes,i),a=atrAt(c,i),p=closes[i];if(!(a>0&&p>0))continue;
   const priorHigh=Math.max(...c.slice(Math.max(0,i-20),i).map(x=>x.h));
@@ -40,7 +43,8 @@ function backtest(c:Candle[],variant:number){
  }
  const wins=outcomes.filter(x=>x>0),losses=outcomes.filter(x=>x<0),winRate=outcomes.length?wins.length/outcomes.length*100:0;
  const avgWin=mean(wins),avgLoss=Math.abs(mean(losses)),rr=avgLoss>0?avgWin/avgLoss:avgWin>0?99:0;
- return {runs:100,samples:outcomes.length,trades:outcomes.length,winRate:Number(winRate.toFixed(1)),rewardRisk:Number(rr.toFixed(2)),passed:outcomes.length>=20&&winRate>=55&&rr>=1.2};
+ const minimumTrades=Math.max(20,Math.ceil(runs*0.10));
+ return {runs,samples:outcomes.length,trades:outcomes.length,minimumTrades,winRate:Number(winRate.toFixed(1)),rewardRisk:Number(rr.toFixed(2)),passed:outcomes.length>=minimumTrades&&winRate>=55&&rr>=1.2};
 }
 export async function runAgentPipeline(input:Input){
  const {item,candles:c,price,ema20,ema50,rsi:rv,atr:a}=input,closes=c.map(x=>x.c),last=c.at(-1)!,prior=c.at(-2)!;
@@ -58,7 +62,7 @@ export async function runAgentPipeline(input:Input){
  const news=await headlines(item),newsVotes=wordSets.map((_,i)=>{const score=sentiment(news,i);return {name:["Macroéconomie mondiale","Banques centrales et régulation","Géopolitique et offre","Actualités sectorielles"][i],score,bias:score>=2?"HAUSSIER":score<=-2?"BAISSIER":"NEUTRE",detail:news.length?news.length+" titres récents analysés":"Aucune actualité exploitable · neutre"};});
  input.onProgress?.([...technical.map(x=>({...x,group:"TECHNIQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),...newsVotes.map(x=>({...x,group:"ACTUALITÉS",ok:x.bias!=="BAISSIER",verdict:x.bias}))]);
  const simulations=Array.from({length:5},(_,i)=>({name:["Simulation EMA / RSI","Simulation pullback","Simulation breakout","Simulation momentum","Simulation multi-facteurs"][i],...backtest(c,i)}));
- input.onProgress?.([...technical.map(x=>({...x,group:"TECHNIQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),...newsVotes.map(x=>({...x,group:"ACTUALITÉS",ok:x.bias!=="BAISSIER",verdict:x.bias})),...simulations.map(x=>({...x,group:"BACKTEST 100",ok:x.passed,verdict:x.passed?"VALIDÉ":"REFUSÉ",detail:x.runs+" simulations · "+x.trades+" signaux · "+x.winRate+"% réussite · R/R "+x.rewardRisk}))]);
+ input.onProgress?.([...technical.map(x=>({...x,group:"TECHNIQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),...newsVotes.map(x=>({...x,group:"ACTUALITÉS",ok:x.bias!=="BAISSIER",verdict:x.bias})),...simulations.map(x=>({...x,group:"BACKTEST "+x.runs,ok:x.passed,verdict:x.passed?"VALIDÉ":"REFUSÉ",detail:x.runs+" simulations · "+x.trades+" signaux · "+x.winRate+"% réussite · R/R "+x.rewardRisk}))]);
  const stopDistance=1.5*a,stopLoss=price-stopDistance,riskBudget=Math.max(0,input.riskBudget),qtyRisk=stopDistance>0?riskBudget/stopDistance:0;
  // Cap the quantity by BOTH available cash and the configured per-order notional.
  // Previously the 12% cash cap could exceed maxOrderNotional and reject every otherwise valid signal.
@@ -69,7 +73,7 @@ export async function runAgentPipeline(input:Input){
   {name:"Taille de position",ok:quantity>0&&notional<=input.maxOrderNotional&&notional<=input.availableCash*0.12,detail:"Quantité "+quantity.toPrecision(6)+" · exposition "+notional.toFixed(2)},
   {name:"Minimum d'ordre Binance",ok:notional>=(input.minimumOrderNotional??10),detail:"Notionnel "+notional.toFixed(2)+" · minimum "+(input.minimumOrderNotional??10).toFixed(2)}
  ];
- input.onProgress?.([...technical.map(x=>({...x,group:"TECHNIQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),...newsVotes.map(x=>({...x,group:"ACTUALITÉS",ok:x.bias!=="BAISSIER",verdict:x.bias})),...simulations.map(x=>({...x,group:"BACKTEST 100",ok:x.passed,verdict:x.passed?"VALIDÉ":"REFUSÉ",detail:x.runs+" simulations · "+x.trades+" signaux · "+x.winRate+"% réussite · R/R "+x.rewardRisk})),...risk.map(x=>({...x,group:"RISQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"}))]);
+ input.onProgress?.([...technical.map(x=>({...x,group:"TECHNIQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),...newsVotes.map(x=>({...x,group:"ACTUALITÉS",ok:x.bias!=="BAISSIER",verdict:x.bias})),...simulations.map(x=>({...x,group:"BACKTEST "+x.runs,ok:x.passed,verdict:x.passed?"VALIDÉ":"REFUSÉ",detail:x.runs+" simulations · "+x.trades+" signaux · "+x.winRate+"% réussite · R/R "+x.rewardRisk})),...risk.map(x=>({...x,group:"RISQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"}))]);
  const technicalVotes=technical.filter(x=>x.ok).length;
  const newsSupportVotes=newsVotes.filter(x=>x.bias!=="BAISSIER").length;
  const simulationPasses=simulations.filter(x=>x.passed).length;
@@ -78,7 +82,7 @@ export async function runAgentPipeline(input:Input){
  const techPass=technicalVotes>=4,newsPass=newsSupportVotes>=3,simPass=simulationPasses>=3,riskPass=risk.every(x=>x.ok);
  const valid=techPass&&newsPass&&simPass&&riskPass;
  const gate={technicalVotes,totalTechnical:technical.length,newsSupportVotes,totalNews:newsVotes.length,simulationPasses,totalSimulations:simulations.length,riskPassed:risk.filter(x=>x.ok).length,totalRisk:risk.length,valid};
- const agents=[...technical.map(x=>({...x,group:"TECHNIQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),...newsVotes.map(x=>({...x,group:"ACTUALITÉS",ok:x.bias!=="BAISSIER",verdict:x.bias})),...simulations.map(x=>({...x,group:"BACKTEST 100",ok:x.passed,verdict:x.passed?"VALIDÉ":"REFUSÉ",detail:x.runs+" simulations · "+x.trades+" signaux · "+x.winRate+"% réussite · R/R "+x.rewardRisk})),...risk.map(x=>({...x,group:"RISQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),{name:"Agent 19 · Validation finale",group:"GATE FINAL",ok:valid,verdict:valid?"TRADE VALIDÉ":"PAS DE TRADE",detail:"Technique "+technicalVotes+"/6 (min. 4) · Actualités "+newsSupportVotes+"/4 (min. 3) · Backtests "+simulationPasses+"/5 (min. 3) · Risque "+(riskPass?"3/3 OK":"REFUSÉ")}];
+ const agents=[...technical.map(x=>({...x,group:"TECHNIQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),...newsVotes.map(x=>({...x,group:"ACTUALITÉS",ok:x.bias!=="BAISSIER",verdict:x.bias})),...simulations.map(x=>({...x,group:"BACKTEST "+x.runs,ok:x.passed,verdict:x.passed?"VALIDÉ":"REFUSÉ",detail:x.runs+" simulations · "+x.trades+" signaux · "+x.winRate+"% réussite · R/R "+x.rewardRisk})),...risk.map(x=>({...x,group:"RISQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),{name:"Agent 19 · Validation finale",group:"GATE FINAL",ok:valid,verdict:valid?"TRADE VALIDÉ":"PAS DE TRADE",detail:"Technique "+technicalVotes+"/6 (min. 4) · Actualités "+newsSupportVotes+"/4 (min. 3) · Backtests "+simulationPasses+"/5 (min. 3) · Risque "+(riskPass?"3/3 OK":"REFUSÉ")}];
  input.onProgress?.(agents);
  return {valid,gate,agents,agentVotes:agents.map(x=>({name:x.name,bullish:!!x.ok,verdict:x.verdict,group:x.group,detail:x.detail||""})),bullishVotes:agents.filter(x=>x.ok).length,totalAgents:19,consensus:valid?"ACHAT":"PAS DE TRADE",newsBias:newsVotes.map(x=>x.bias),simulation:simulations,risk:{stopLoss,quantity,notional}};
 }
