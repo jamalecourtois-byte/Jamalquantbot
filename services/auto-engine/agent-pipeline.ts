@@ -1,4 +1,4 @@
-type Candle = { t:number; o:number; h:number; l:number; c:number };
+type Candle = { t:number; o:number; h:number; l:number; c:number; v?:number };
 type Market = { symbol:string; type:string };
 type Input = {
   item:Market; candles:Candle[]; price:number; ema20:number; ema50:number; rsi:number; atr:number;
@@ -43,14 +43,14 @@ function backtest(c:Candle[],variant:number){
 }
 export async function runAgentPipeline(input:Input){
  const {item,candles:c,price,ema20,ema50,rsi:rv,atr:a}=input,closes=c.map(x=>x.c),last=c.at(-1)!,prior=c.at(-2)!;
- const recent=c.slice(-20),prior20=c.slice(-40,-20),volNow=mean(recent.map(x=>x.h-x.l)),volPrev=mean(prior20.map(x=>x.h-x.l));
+ const recent=c.slice(-20),prior20=c.slice(-40,-20),volNow=mean(recent.map(x=>Number(x.v)||0)),volPrev=mean(prior20.map(x=>Number(x.v)||0));
  const returns=closes.slice(-21).slice(1).map((x,i)=>x/closes.slice(-21)[i]-1),volatility=Math.sqrt(mean(returns.map(x=>x*x)));
  const technical=[
   {name:"Tendance multi-période",ok:ema20>ema50,detail:ema20>ema50?"EMA20 au-dessus EMA50":"EMA20 sous EMA50"},
   {name:"Structure des prix",ok:price>ema20&&last.c>prior.c,detail:"Cours vs EMA20 et clôture précédente"},
   {name:"Momentum RSI",ok:rv>=50&&rv<=68,detail:"RSI "+rv.toFixed(1)},
   {name:"Volatilité",ok:volatility>0.0003&&volatility<0.04,detail:"Volatilité réalisée "+(volatility*100).toFixed(2)+"%"},
-  {name:"Volume / activité",ok:volNow>=volPrev*0.75,detail:"Amplitude récente "+(volPrev>0?(volNow/volPrev).toFixed(2):"n/a")+"×"},
+  {name:"Volume / activité",ok:volPrev>0&&volNow>=volPrev*0.75,detail:"Volume récent "+(volPrev>0?(volNow/volPrev).toFixed(2):"indisponible")+"×"},
   {name:"Cassure / structure",ok:last.c>Math.max(...recent.slice(0,-1).map(x=>x.h)),detail:"Clôture vs plus haut des 19 bougies précédentes"}
  ];
  const news=await headlines(item),newsVotes=wordSets.map((_,i)=>{const score=sentiment(news,i);return {name:["Macroéconomie mondiale","Banques centrales et régulation","Géopolitique et offre","Actualités sectorielles"][i],score,bias:score>=2?"HAUSSIER":score<=-2?"BAISSIER":"NEUTRE",detail:news.length?news.length+" titres récents analysés":"Aucune actualité exploitable · neutre"};});
