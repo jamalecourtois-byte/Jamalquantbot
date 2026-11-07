@@ -66,9 +66,15 @@ export async function runAgentPipeline(input:Input){
   {name:"Minimum d'ordre Binance",ok:notional>=(input.minimumOrderNotional??10),detail:"Notionnel "+notional.toFixed(2)+" · minimum "+(input.minimumOrderNotional??10).toFixed(2)}
  ];
  input.onProgress?.([...technical.map(x=>({...x,group:"TECHNIQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),...newsVotes.map(x=>({...x,group:"ACTUALITÉS",ok:x.bias!=="BAISSIER",verdict:x.bias})),...simulations.map(x=>({...x,group:"BACKTEST 100",ok:x.passed,verdict:x.passed?"VALIDÉ":"REFUSÉ",detail:x.runs+" simulations · "+x.trades+" signaux · "+x.winRate+"% réussite · R/R "+x.rewardRisk})),...risk.map(x=>({...x,group:"RISQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"}))]);
- const techPass=technical.every(x=>x.ok),newsPass=newsVotes.every(x=>x.bias!=="BAISSIER"),simPass=simulations.every(x=>x.passed),riskPass=risk.every(x=>x.ok);
+ const technicalVotes=technical.filter(x=>x.ok).length;
+ const newsSupportVotes=newsVotes.filter(x=>x.bias!=="BAISSIER").length;
+ const simulationPasses=simulations.filter(x=>x.passed).length;
+ // Consensus robuste sans exiger 19 validations unanimes : 4/6 techniques,
+ // 3/4 actualités et 3/5 backtests. Les trois contrôles de risque restent obligatoires.
+ const techPass=technicalVotes>=4,newsPass=newsSupportVotes>=3,simPass=simulationPasses>=3,riskPass=risk.every(x=>x.ok);
  const valid=techPass&&newsPass&&simPass&&riskPass;
- const agents=[...technical.map(x=>({...x,group:"TECHNIQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),...newsVotes.map(x=>({...x,group:"ACTUALITÉS",ok:x.bias!=="BAISSIER",verdict:x.bias})),...simulations.map(x=>({...x,group:"BACKTEST 100",ok:x.passed,verdict:x.passed?"VALIDÉ":"REFUSÉ",detail:x.runs+" simulations · "+x.trades+" signaux · "+x.winRate+"% réussite · R/R "+x.rewardRisk})),...risk.map(x=>({...x,group:"RISQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),{name:"Agent 19 · Validation finale",group:"GATE FINAL",ok:valid,verdict:valid?"TRADE VALIDÉ":"PAS DE TRADE",detail:"Technique "+(techPass?"OK":"KO")+" · News "+(newsPass?"OK":"KO")+" · Backtests "+(simPass?"OK":"KO")+" · Risque "+(riskPass?"OK":"KO")}];
+ const gate={technicalVotes,totalTechnical:technical.length,newsSupportVotes,totalNews:newsVotes.length,simulationPasses,totalSimulations:simulations.length,riskPassed:risk.filter(x=>x.ok).length,totalRisk:risk.length,valid};
+ const agents=[...technical.map(x=>({...x,group:"TECHNIQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),...newsVotes.map(x=>({...x,group:"ACTUALITÉS",ok:x.bias!=="BAISSIER",verdict:x.bias})),...simulations.map(x=>({...x,group:"BACKTEST 100",ok:x.passed,verdict:x.passed?"VALIDÉ":"REFUSÉ",detail:x.runs+" simulations · "+x.trades+" signaux · "+x.winRate+"% réussite · R/R "+x.rewardRisk})),...risk.map(x=>({...x,group:"RISQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),{name:"Agent 19 · Validation finale",group:"GATE FINAL",ok:valid,verdict:valid?"TRADE VALIDÉ":"PAS DE TRADE",detail:"Technique "+technicalVotes+"/6 (min. 4) · Actualités "+newsSupportVotes+"/4 (min. 3) · Backtests "+simulationPasses+"/5 (min. 3) · Risque "+(riskPass?"3/3 OK":"REFUSÉ")}];
  input.onProgress?.(agents);
- return {valid,agents,agentVotes:agents.map(x=>({name:x.name,bullish:!!x.ok,verdict:x.verdict,group:x.group,detail:x.detail||""})),bullishVotes:agents.filter(x=>x.ok).length,totalAgents:19,consensus:valid?"ACHAT":"PAS DE TRADE",newsBias:newsVotes.map(x=>x.bias),simulation:simulations,risk:{stopLoss,quantity,notional}};
+ return {valid,gate,agents,agentVotes:agents.map(x=>({name:x.name,bullish:!!x.ok,verdict:x.verdict,group:x.group,detail:x.detail||""})),bullishVotes:agents.filter(x=>x.ok).length,totalAgents:19,consensus:valid?"ACHAT":"PAS DE TRADE",newsBias:newsVotes.map(x=>x.bias),simulation:simulations,risk:{stopLoss,quantity,notional}};
 }
