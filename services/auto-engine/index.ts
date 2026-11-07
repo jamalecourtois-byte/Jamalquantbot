@@ -164,3 +164,4 @@ Bun.serve({port:Number(env.PORT||3000),fetch:handle});
 const cycleIntervalMs=60_000;
 setInterval(()=>{void cycle().catch(err=>console.error("Scheduled paper cycle failed:",err instanceof Error?err.message:String(err)));},cycleIntervalMs);
 console.log("Paper engine scheduler enabled:",cycleIntervalMs,"ms");
+void cycle().catch(err=>console.error("Startup paper cycle failed:",err instanceof Error?err.message:String(err)));
