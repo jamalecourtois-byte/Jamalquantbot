@@ -101,7 +101,7 @@ Bun.serve({port:Number(Bun.env.PORT||3000),websocket:{
     if(!r.ok||!Number.isFinite(Number(t.lastPrice)))return json({ok:false,error:t.msg||"Binance ticker HTTP "+r.status},502);
     return json({ok:true,exchange:id,symbol,timestamp:Number(t.closeTime)||Date.now(),last:Number(t.lastPrice),bid:Number(t.bidPrice),ask:Number(t.askPrice),open:Number(t.openPrice),percentage:Number(t.priceChangePercent),high:Number(t.highPrice),low:Number(t.lowPrice),baseVolume:Number(t.volume),quoteVolume:Number(t.quoteVolume),source:"binance-public-rest"});
    }
-   const timeframe=u.searchParams.get("timeframe")||"1h",limit=Math.min(500,Math.max(60,Number(u.searchParams.get("limit")||150)));
+   const timeframe=u.searchParams.get("timeframe")||"1h",limit=Math.min(1000,Math.max(60,Number(u.searchParams.get("limit")||150)));
    if(!durations[timeframe])return json({ok:false,error:"Timeframe non pris en charge"},400);
    const r=await fetch("https://data-api.binance.vision/api/v3/klines?symbol="+pair+"&interval="+timeframe+"&limit="+limit,{signal:AbortSignal.timeout(15000)}),rows:any=await r.json().catch(()=>null);
    if(!r.ok||!Array.isArray(rows))return json({ok:false,error:"Binance OHLCV HTTP "+r.status},502);
