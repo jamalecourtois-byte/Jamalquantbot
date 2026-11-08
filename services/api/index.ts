@@ -53,33 +53,38 @@ if(url.pathname==="/miniapp/auto"&&request.method==="POST"){
   }
   if(action==="auto_start"){
    const mode=String(body.mode||"PAPER").toUpperCase();
+   const admins=String(env.CONNECTOR_ADMIN_TELEGRAM_IDS||"").split(",").map((x:string)=>x.trim()).filter(Boolean);
+   const isAdmin=admins.includes(String(userId));
    if(mode==="BINANCE_SPOT_TESTNET"){
-    const admins=String(env.CONNECTOR_ADMIN_TELEGRAM_IDS||"").split(",").map((x:string)=>x.trim()).filter(Boolean);
-    if(!admins.includes(String(userId)))return corsJson({ok:false,error:"Le mode Binance Testnet est réservé à l’administrateur."},{status:403});
-    const result=await callAutoEngine("/testnet/start",{userId});
-    return corsJson({ok:true,...result,data:result});
+    if(!isAdmin)return corsJson({ok:false,error:"Le mode Binance Testnet est réservé à l’administrateur."},{status:403});
+    const paper=await callAutoEngine("/status",{userId});if(String(paper.status).toUpperCase()==="RUNNING")return corsJson({ok:false,error:"Arrête d’abord la session Simulation avant de démarrer Binance Testnet."},{status:409});
+    const result=await callAutoEngine("/testnet/start",{userId});return corsJson({ok:true,...result,data:result});
    }
+   if(isAdmin){const testnet=await callAutoEngine("/testnet/status",{userId});if(String(testnet.status).toUpperCase()==="RUNNING")return corsJson({ok:false,error:"Arrête d’abord la session Binance Testnet avant de démarrer la Simulation."},{status:409});}
    const capital=Number(body.capital);if(!Number.isFinite(capital)||capital<10||capital>1000000)return corsJson({ok:false,error:"Capital fictif compris entre 10 et 1 000 000 USDT."},{status:400});
    const result=await callAutoEngine("/start",{userId,symbol:"AUTO",capital});
-   return corsJson({ok:true,...result,data:result});
+   return corsJson({ok:true,...result,data:{...result,mode:"PAPER"}});
   }
   if(action==="auto_status"){
+   const admins=String(env.CONNECTOR_ADMIN_TELEGRAM_IDS||"").split(",").map((x:string)=>x.trim()).filter(Boolean);
+   const isAdmin=admins.includes(String(userId));
+   const paper=await callAutoEngine("/status",{userId});
+   if(String(paper.status).toUpperCase()==="RUNNING")return corsJson({ok:true,data:{...paper,mode:"PAPER"}});
+   if(isAdmin){const testnet=await callAutoEngine("/testnet/status",{userId});if(String(testnet.status).toUpperCase()==="RUNNING")return corsJson({ok:true,data:testnet});}
    const mode=String(body.mode||"PAPER").toUpperCase();
-   if(mode==="BINANCE_SPOT_TESTNET"){
-    const admins=String(env.CONNECTOR_ADMIN_TELEGRAM_IDS||"").split(",").map((x:string)=>x.trim()).filter(Boolean);
-    if(!admins.includes(String(userId)))return corsJson({ok:false,error:"Accès Binance Testnet réservé à l’administrateur."},{status:403});
-    return corsJson({ok:true,data:await callAutoEngine("/testnet/status",{userId})});
-   }
-   return corsJson({ok:true,data:await callAutoEngine("/status",{userId})});
+   if(mode==="BINANCE_SPOT_TESTNET"&&!isAdmin)return corsJson({ok:false,error:"Accès Binance Testnet réservé à l’administrateur."},{status:403});
+   const result=mode==="BINANCE_SPOT_TESTNET"?await callAutoEngine("/testnet/status",{userId}):paper;
+   return corsJson({ok:true,data:mode==="BINANCE_SPOT_TESTNET"?result:{...result,mode:"PAPER"}});
   }
   if(action==="auto_stop"){
+   const admins=String(env.CONNECTOR_ADMIN_TELEGRAM_IDS||"").split(",").map((x:string)=>x.trim()).filter(Boolean);
+   const isAdmin=admins.includes(String(userId));
+   const paper=await callAutoEngine("/status",{userId});
+   if(String(paper.status).toUpperCase()==="RUNNING"){const result=await callAutoEngine("/stop",{userId});return corsJson({ok:true,...result,data:{...result,mode:"PAPER"}});}
+   if(isAdmin){const testnet=await callAutoEngine("/testnet/status",{userId});if(String(testnet.status).toUpperCase()==="RUNNING"){const result=await callAutoEngine("/testnet/stop",{userId});return corsJson({ok:true,...result,data:{...result,mode:"BINANCE_SPOT_TESTNET"}});}}
    const mode=String(body.mode||"PAPER").toUpperCase();
-   if(mode==="BINANCE_SPOT_TESTNET"){
-    const admins=String(env.CONNECTOR_ADMIN_TELEGRAM_IDS||"").split(",").map((x:string)=>x.trim()).filter(Boolean);
-    if(!admins.includes(String(userId)))return corsJson({ok:false,error:"Accès Binance Testnet réservé à l’administrateur."},{status:403});
-    const result=await callAutoEngine("/testnet/stop",{userId});return corsJson({ok:true,...result,data:result});
-   }
-   const result=await callAutoEngine("/stop",{userId});return corsJson({ok:true,...result,data:result});
+   if(mode==="BINANCE_SPOT_TESTNET"&&!isAdmin)return corsJson({ok:false,error:"Accès Binance Testnet réservé à l’administrateur."},{status:403});
+   const result=mode==="BINANCE_SPOT_TESTNET"?await callAutoEngine("/testnet/stop",{userId}):await callAutoEngine("/stop",{userId});return corsJson({ok:true,...result,data:{...result,mode}});
   }
   return corsJson({ok:false,error:"Action Mini App inconnue."},{status:400});
  }catch(error){console.error("Mini App auto action failed:",error);return corsJson({ok:false,error:error instanceof Error?error.message:"Erreur interne du terminal."},{status:502});}
