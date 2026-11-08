@@ -141,6 +141,21 @@ async function testnetOrder(uid:number,symbol:string,side:"buy"|"sell",amount:nu
  await db`INSERT INTO testnet_auto_orders(telegram_user_id,client_order_id,exchange_order_id,symbol,side,quantity,filled,average,cost,status,reason,requested_amount,candle_time) VALUES(${uid},${clientOrderId},${String(o.id||"")},${normalized},${side.toUpperCase()},${Number(o.amount||0)},${Number(o.filled||0)},${Number(o.average||0)},${Number(o.cost||0)},${String(o.status||"submitted")},${reason},${amount},${candleTime}) ON CONFLICT(client_order_id) DO UPDATE SET exchange_order_id=EXCLUDED.exchange_order_id,quantity=EXCLUDED.quantity,filled=EXCLUDED.filled,average=EXCLUDED.average,cost=EXCLUDED.cost,status=EXCLUDED.status`;
  return {clientOrderId,...o};
 }
+async function applyTestnetSellFill(uid:number,symbol:string,filled:number){
+ return await db.begin(async(tx:any)=>{
+  const rows=await tx`SELECT quantity FROM testnet_auto_positions WHERE telegram_user_id=${uid} AND symbol=${symbol} FOR UPDATE`;
+  if(!rows.length)return {closed:true,remaining:0};
+  const current=Math.max(0,Number(rows[0].quantity)||0);
+  const remaining=Math.max(0,current-Math.max(0,filled));
+  const tolerance=Math.max(1e-12,current*1e-8);
+  if(remaining<=tolerance){
+   await tx`DELETE FROM testnet_auto_positions WHERE telegram_user_id=${uid} AND symbol=${symbol}`;
+   return {closed:true,remaining:0};
+  }
+  await tx`UPDATE testnet_auto_positions SET quantity=${remaining},updated_at=NOW() WHERE telegram_user_id=${uid} AND symbol=${symbol}`;
+  return {closed:false,remaining};
+ });
+}
 async function scanTestnetAccount(account:any){
  const uid=Number(account.telegram_user_id);
  const cryptoMarkets=universe.filter(x=>x.type==="crypto");
@@ -163,15 +178,17 @@ async function scanTestnetAccount(account:any){
     const po=pendingRows[0],side=String(po.side).toLowerCase()==="buy"?"buy":"sell";
     const refreshed=await testnetOrder(uid,m.symbol,side,Number(po.requested_amount),String(po.reason),Number(po.candle_time));orderRequests++;
     const filled=Number(refreshed.filled||0),average=Number(refreshed.average||0),status=String(refreshed.status||"").toLowerCase();
-    if(filled>0&&average>0&&["closed","filled"].includes(status)){
+    if(filled>0&&average>0&&["closed","filled","canceled","rejected","expired","expired_in_match"].includes(status)){
      if(side==="buy"){
       const distance=vol*1.5;
       await db`INSERT INTO testnet_auto_positions(telegram_user_id,symbol,quantity,entry_price,stop_price,target_price,highest_price) VALUES(${uid},${m.symbol},${filled},${average},${average-distance},${average+distance*2},${average}) ON CONFLICT(telegram_user_id,symbol) DO NOTHING`;
       orders++;
       void telegram("🟢 JAMALQUANT · ACHAT TESTNET\n"+m.symbol+"\nQuantité exécutée : "+fmt(filled)+"\nPrix moyen : "+fmt(average)+"\nStop : "+fmt(average-distance)+"\nObjectif 2R : "+fmt(average+distance*2)+"\nStratégie : "+String(po.reason||"Consensus validé")+"\nVotes : "+Number(vote.bullishVotes||0)+"/19 · RSI "+rv.toFixed(1)+"\nFonds fictifs Binance Testnet.",uid).catch(()=>{});
      }else{
-      await db`DELETE FROM testnet_auto_positions WHERE telegram_user_id=${uid} AND symbol=${m.symbol}`;
-      await db`INSERT INTO testnet_auto_cooldowns(telegram_user_id,symbol,cooldown_until) VALUES(${uid},${m.symbol},NOW()+INTERVAL '5 minutes') ON CONFLICT(telegram_user_id,symbol) DO UPDATE SET cooldown_until=EXCLUDED.cooldown_until`;
+      const fillState=await applyTestnetSellFill(uid,m.symbol,filled);
+      if(fillState.closed){
+       await db`INSERT INTO testnet_auto_cooldowns(telegram_user_id,symbol,cooldown_until) VALUES(${uid},${m.symbol},NOW()+INTERVAL '5 minutes') ON CONFLICT(telegram_user_id,symbol) DO UPDATE SET cooldown_until=EXCLUDED.cooldown_until`;
+      }
       orders++;
       void telegram("🔴 JAMALQUANT · VENTE TESTNET\n"+m.symbol+"\nQuantité exécutée : "+fmt(filled)+"\nPrix moyen : "+fmt(average)+"\nStatut : "+status,uid).catch(()=>{});
      }
@@ -185,9 +202,11 @@ async function scanTestnetAccount(account:any){
     if(exit){
      const result=await testnetOrder(uid,m.symbol,"sell",Number(p.quantity),m.price<=Number(p.stop_price)?"STOP_LOSS":m.price>=Number(p.target_price)?"TAKE_PROFIT":"SIGNAL_INVALIDATED",last.t);orderRequests++;
      const filled=Number(result.filled||0),average=Number(result.average||m.price);
-     if(filled>0&&["closed","filled"].includes(String(result.status||"").toLowerCase())){
-      await db`DELETE FROM testnet_auto_positions WHERE telegram_user_id=${uid} AND symbol=${m.symbol}`;
-      await db`INSERT INTO testnet_auto_cooldowns(telegram_user_id,symbol,cooldown_until) VALUES(${uid},${m.symbol},NOW()+INTERVAL '5 minutes') ON CONFLICT(telegram_user_id,symbol) DO UPDATE SET cooldown_until=EXCLUDED.cooldown_until`;
+     if(filled>0&&["closed","filled","canceled","rejected","expired","expired_in_match"].includes(String(result.status||"").toLowerCase())){
+      const fillState=await applyTestnetSellFill(uid,m.symbol,filled);
+      if(fillState.closed){
+       await db`INSERT INTO testnet_auto_cooldowns(telegram_user_id,symbol,cooldown_until) VALUES(${uid},${m.symbol},NOW()+INTERVAL '5 minutes') ON CONFLICT(telegram_user_id,symbol) DO UPDATE SET cooldown_until=EXCLUDED.cooldown_until`;
+      }
       orders++;
       void telegram("🔴 JAMALQUANT · VENTE TESTNET\n"+m.symbol+"\nQuantité exécutée : "+fmt(filled)+"\nPrix moyen : "+fmt(average)+"\nStatut : "+String(result.status),uid).catch(()=>{});
      }else{pendingOrders++;}
@@ -205,7 +224,7 @@ async function scanTestnetAccount(account:any){
    if(budget<10){budgetSkipped++;continue;}
    const result=await testnetOrder(uid,m.symbol,"buy",budget,String(vote.selectedStrategy?.name||"VALIDATED_STRATEGY"),last.t);orderRequests++;
    const filled=Number(result.filled||0),average=Number(result.average||0),status=String(result.status||"").toLowerCase();
-   if(filled>0&&average>0&&["closed","filled"].includes(status)){
+   if(filled>0&&average>0&&["closed","filled","canceled","rejected","expired","expired_in_match"].includes(status)){
     const distance=vol*1.5,stop=average-distance,target=average+distance*2;
     await db`INSERT INTO testnet_auto_positions(telegram_user_id,symbol,quantity,entry_price,stop_price,target_price,highest_price) VALUES(${uid},${m.symbol},${filled},${average},${stop},${target},${average}) ON CONFLICT(telegram_user_id,symbol) DO NOTHING`;
     orders++;
