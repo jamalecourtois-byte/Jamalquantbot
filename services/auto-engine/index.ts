@@ -145,7 +145,7 @@ async function scanTestnetAccount(account:any){
    const m=await getMarket(item),cs=m.candles,closes=cs.map((x:any)=>x.c),e20=ema(closes,20),e50=ema(closes,50),rv=rsi(closes),vol=atr(cs),last=cs[cs.length-1],prev=cs[cs.length-2];
    const vote=await runAgentPipeline({item:m,candles:cs,price:m.price,ema20:e20,ema50:e50,rsi:rv,atr:vol,riskBudget:usdt*0.01,availableCash:usdt,maxOrderNotional:orderBudget,minimumOrderNotional:10,onProgress:(rows:any[])=>{const current=agentState.get(m.symbol)||{};agentState.set(m.symbol,{...current,symbol:m.symbol,type:"crypto",price:m.price,ema20:e20,ema50:e50,rsi:rv,trend:e20>e50?"HAUSSIER":"BAISSIER",pipelineValid:false,agentVotes:rows.map(x=>({name:x.name,bullish:!!x.ok,verdict:x.verdict,group:x.group,detail:x.detail||""})),agentCount:19,state:"ANALYSE DES AGENTS "+rows.length+"/19",updatedAt:Date.now()});}});
    const signal=vote.valid;
-   gateSummary.push({symbol:m.symbol,valid:vote.valid,technical:vote.gate?.technicalVotes,news:vote.gate?.newsSupportVotes,backtests:vote.gate?.simulationPasses,risk:vote.gate?.riskPassed,simulations:(vote.simulation||[]).map((x:any)=>({name:x.name,trades:x.trades,minimumTrades:x.minimumTrades,winRate:x.winRate,rewardRisk:x.rewardRisk,passed:x.passed}))});
+   gateSummary.push({symbol:m.symbol,valid:vote.valid,technical:vote.gate?.technicalVotes,news:vote.gate?.newsSupportVotes,backtests:vote.gate?.simulationPasses,risk:vote.gate?.riskPassed,selectedStrategy:vote.selectedStrategy?.name||null,simulations:(vote.simulation||[]).map((x:any)=>({name:x.name,trades:x.trades,minimumTrades:x.minimumTrades,winRate:x.winRate,rewardRisk:x.rewardRisk,passed:x.passed,currentEntry:x.currentEntry}))});
    if(vote.valid)signals++;else if(Number(vote.gate?.riskPassed||0)<3)riskRejected++;else consensusRejected++;
    agentState.set(m.symbol,{symbol:m.symbol,type:"crypto",price:m.price,ema20:e20,ema50:e50,rsi:rv,trend:e20>e50?"HAUSSIER":"BAISSIER",signal,score:vote.bullishVotes,agentCount:vote.totalAgents,agentVotes:vote.agentVotes,pipelineValid:vote.valid,consensus:vote.consensus,newsBias:vote.newsBias,simulation:vote.simulation,risk:vote.risk,state:"TESTNET · "+(signal?"SIGNAL ACHAT":"ANALYSÉ · ATTENTE"),changePct:(m.price/cs[0].c-1)*100,spark:cs.slice(-40).map((x:any)=>x.c),chartCandles:cs.slice(-60).map((x:any)=>({t:x.t,o:x.o,h:x.h,l:x.l,c:x.c})),updatedAt:Date.now()});
    scanned++;
@@ -194,7 +194,7 @@ async function scanTestnetAccount(account:any){
    if(Number(count[0]?.n||0)>=2){positionLimitSkipped++;continue;}
    const budget=orderBudget;
    if(budget<10){budgetSkipped++;continue;}
-   const result=await testnetOrder(uid,m.symbol,"buy",budget,"EMA_RSI_CONSENSUS",last.t);orderRequests++;
+   const result=await testnetOrder(uid,m.symbol,"buy",budget,String(vote.selectedStrategy?.name||"VALIDATED_STRATEGY"),last.t);orderRequests++;
    const filled=Number(result.filled||0),average=Number(result.average||0),status=String(result.status||"").toLowerCase();
    if(filled>0&&average>0&&["closed","filled"].includes(status)){
     const distance=vol*1.5,stop=average-distance,target=average+distance*2;
