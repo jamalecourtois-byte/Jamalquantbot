@@ -2,7 +2,7 @@ import postgres from "postgres@3.4.7";
 import { runAgentPipeline, warmNews } from "./agent-pipeline.ts";
 const env=Bun.env;
 if(!env.DATABASE_URL||!env.AUTO_ENGINE_SECRET)throw new Error("DATABASE_URL ou AUTO_ENGINE_SECRET manquant");
-const db=postgres(env.DATABASE_URL,{max:8,idle_timeout:20,connect_timeout:10});
+const db=postgres(env.DATABASE_URL,{max:8,idle_timeout:0,connect_timeout:10});
 await db`CREATE TABLE IF NOT EXISTS sandbox_client_ledgers (telegram_user_id BIGINT PRIMARY KEY, currency TEXT NOT NULL DEFAULT 'USDT' CHECK(currency='USDT'), balance NUMERIC(24,8) NOT NULL DEFAULT 0 CHECK(balance>=0), total_credited NUMERIC(24,8) NOT NULL DEFAULT 0, total_debited NUMERIC(24,8) NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'OPEN' CHECK(status IN ('OPEN','FROZEN')), created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
 await db`CREATE TABLE IF NOT EXISTS sandbox_client_ledger_entries (id BIGSERIAL PRIMARY KEY, telegram_user_id BIGINT NOT NULL REFERENCES sandbox_client_ledgers(telegram_user_id), entry_type TEXT NOT NULL CHECK(entry_type IN ('OPENING_VIRTUAL','CREDIT_VIRTUAL','DEBIT_VIRTUAL','PAPER_PNL')), amount NUMERIC(24,8) NOT NULL CHECK(amount>0), balance_after NUMERIC(24,8) NOT NULL CHECK(balance_after>=0), reference TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(telegram_user_id,reference))`;
 await db`CREATE INDEX IF NOT EXISTS sandbox_ledger_entries_user_created_idx ON sandbox_client_ledger_entries(telegram_user_id,created_at DESC)`;
