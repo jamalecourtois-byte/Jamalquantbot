@@ -374,4 +374,10 @@ Bun.serve({port:Number(env.PORT||3000),fetch:handle});
 const cycleIntervalMs=60_000;
 setInterval(()=>{void cycle().catch(err=>console.error("Scheduled paper cycle failed:",err instanceof Error?err.message:String(err)));},cycleIntervalMs);
 console.log("Paper engine scheduler enabled:",cycleIntervalMs,"ms");
+// Separate Testnet cadence: a slow paper portfolio must never starve the Binance scanner.
+// testnetCycleBusy and last_scan_at prevent overlapping or duplicate scans.
+const testnetIntervalMs=60_000;
+setInterval(()=>{void testnetCycle().catch(err=>console.error("Scheduled Testnet cycle failed:",err instanceof Error?err.message:String(err)));},testnetIntervalMs);
+console.log("Binance Spot Testnet scheduler enabled:",testnetIntervalMs,"ms");
+void testnetCycle().catch(err=>console.error("Startup Testnet cycle failed:",err instanceof Error?err.message:String(err)));
 void cycle().catch(err=>console.error("Startup paper cycle failed:",err instanceof Error?err.message:String(err)));
