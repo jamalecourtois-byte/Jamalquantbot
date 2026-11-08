@@ -57,10 +57,8 @@ if(url.pathname==="/miniapp/auto"&&request.method==="POST"){
    const isAdmin=admins.includes(String(userId));
    if(mode==="BINANCE_SPOT_TESTNET"){
     if(!isAdmin)return corsJson({ok:false,error:"Le mode Binance Testnet est réservé à l’administrateur."},{status:403});
-    const paper=await callAutoEngine("/status",{userId});if(String(paper.status).toUpperCase()==="RUNNING")return corsJson({ok:false,error:"Arrête d’abord la session Simulation avant de démarrer Binance Testnet."},{status:409});
     const result=await callAutoEngine("/testnet/start",{userId});return corsJson({ok:true,...result,data:result});
    }
-   if(isAdmin){const testnet=await callAutoEngine("/testnet/status",{userId});if(String(testnet.status).toUpperCase()==="RUNNING")return corsJson({ok:false,error:"Arrête d’abord la session Binance Testnet avant de démarrer la Simulation."},{status:409});}
    const capital=Number(body.capital);if(!Number.isFinite(capital)||capital<10||capital>1000000)return corsJson({ok:false,error:"Capital fictif compris entre 10 et 1 000 000 USDT."},{status:400});
    const result=await callAutoEngine("/start",{userId,symbol:"AUTO",capital});
    return corsJson({ok:true,...result,data:{...result,mode:"PAPER"}});
