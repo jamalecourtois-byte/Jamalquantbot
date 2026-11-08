@@ -345,13 +345,13 @@ async function handle(req:Request){
  if(url.pathname==="/start"){
   const capital=Number(body.capital);if(!Number.isFinite(capital)||capital<MIN_CAPITAL||capital>MAX_CAPITAL)return Response.json({error:"Capital fictif invalide ("+MIN_CAPITAL+" à "+MAX_CAPITAL.toLocaleString("fr-FR")+" USDT)"},{status:400});
   const existing=await db`SELECT * FROM paper_auto_portfolios WHERE telegram_user_id=${userId}`;
-  if(existing.length&&existing[0].status==="RUNNING")return Response.json({ok:true,alreadyRunning:true,capital:Number(existing[0].initial_capital),cash:Number(existing[0].cash),universe:universe.length});
+  if(existing.length&&existing[0].status==="RUNNING")return Response.json({ok:true,status:"RUNNING",mode:"PAPER",alreadyRunning:true,capital:Number(existing[0].initial_capital),cash:Number(existing[0].cash),universe:universe.length,message:"Moteur déjà actif · portefeuille virtuel synchronisé."});
   await db`INSERT INTO paper_auto_portfolios(telegram_user_id,initial_capital,cash,realized_pnl,status,updated_at) VALUES(${userId},${capital},${capital},0,'RUNNING',NOW()) ON CONFLICT(telegram_user_id) DO UPDATE SET initial_capital=EXCLUDED.initial_capital,cash=EXCLUDED.cash,realized_pnl=0,status='RUNNING',created_at=NOW(),updated_at=NOW(),last_scan_at=NULL`;
   await db`DELETE FROM paper_auto_equity_history WHERE telegram_user_id=${userId}`;
   await db`INSERT INTO paper_auto_equity_history(telegram_user_id,session_started_at,equity,pnl) VALUES(${userId},NOW(),${capital},0)`;
   void cycle().catch(err=>console.error('Initial multi-market scan failed',err instanceof Error?err.message:String(err)));
   try{await telegram("🚀 JAMALQUANT MULTI-MARCHÉS ACTIVÉ\nCapital fictif : "+fmt(capital)+" USD\nUnivers : "+universe.length+" marchés (crypto, forex, matières premières, indices, actions)\nScan automatique toutes les ~60 secondes.\nMode simulation : aucun ordre réel, aucun gain garanti.",userId);}catch(err){console.warn("Start notification failed; paper portfolio remains active:",err instanceof Error?err.message:String(err));}
-  return Response.json({ok:true,alreadyRunning:false,capital,universe:universe.length,markets:universe.map(x=>x.symbol),scanStarted:true});
+  return Response.json({ok:true,status:"RUNNING",mode:"PAPER",alreadyRunning:false,capital,universe:universe.length,markets:universe.map(x=>x.symbol),scanStarted:true,message:"Moteur démarré · premier scan lancé · portefeuille virtuel."});
  }
  if(url.pathname==="/status"){
   const rows=await db`SELECT * FROM paper_auto_portfolios WHERE telegram_user_id=${userId}`;if(!rows.length)return Response.json({ok:true,status:"STOPPED",capital:0,cash:0,available:0,invested:0,realized:0,unrealized:0,equity:0,pnl:0,equityHistory:[],openPositions:0,positions:[],trades:[],universe:universe.length,markets:universe.map(x=>x.symbol),agents:universe.map(u=>agentState.get(u.symbol)||{symbol:u.symbol,type:u.type,state:"INITIALISATION"}),lastScanAt:null});
