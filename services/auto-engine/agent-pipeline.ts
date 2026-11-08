@@ -26,8 +26,7 @@ export async function warmNews(items:Market[]){await Promise.all(items.map(item=
 function sentiment(titles:string[],set:number){let score=0;for(const title of titles){const t=title.toLowerCase();for(const w of wordSets[set].up)if(t.includes(w))score++;for(const w of wordSets[set].down)if(t.includes(w))score--;}return clamp(score,-8,8);}
 function backtest(c:Candle[],variant:number){
  const closes=c.map(x=>x.c),outcomes:number[]=[];
- // Long Testnet histories use up to 900 candidate bars and sequential trades
- // (no overlapping positions). Short Yahoo histories retain the 100-bar sample.
+ // Backtest on closed candles only; sequential positions prevent overlapping samples.
  const longHistory=c.length>=800,runs=longHistory?Math.min(900,c.length-63):Math.min(100,Math.max(0,c.length-63));
  const first=c.length-runs-13,last=first+runs-1;let nextAllowed=first;
  for(let i=first;i<=last;i++){
@@ -38,22 +37,27 @@ function backtest(c:Candle[],variant:number){
   const momentum=p/closes[Math.max(0,i-5)]-1;
   const entry=variant===0?fast>slow&&rv>50&&rv<68:variant===1?fast>slow&&rv>45&&rv<62:variant===2?p>priorHigh&&rv<72:variant===3?momentum>0.002&&rv<70:fast>slow&&momentum>0&&rv>48&&rv<65;
   if(!entry)continue;
-  const stop=p-1.5*a,target=p+3*a;let outcome=0,exitIndex=Math.min(i+12,c.length-1);
-  for(let j=i+1;j<=exitIndex;j++){const bar=c[j];if(bar.l<=stop){outcome=-1;exitIndex=j;break;}if(bar.h>=target){outcome=2;exitIndex=j;break;}}
-  if(outcome===0){const close=c[exitIndex].c;outcome=close>p?0.25:-0.25;}
-  outcomes.push(outcome);
+  const riskUnit=1.5*a,stop=p-riskUnit,target=p+2*riskUnit;let outcomeR=0,exitIndex=Math.min(i+12,c.length-1);
+  for(let j=i+1;j<=exitIndex;j++){const bar=c[j];if(bar.l<=stop){outcomeR=-1;exitIndex=j;break;}if(bar.h>=target){outcomeR=2;exitIndex=j;break;}}
+  if(outcomeR===0)outcomeR=(c[exitIndex].c-p)/riskUnit;
+  // Approximate round-trip taker fees and slippage: 0.14% of notional, expressed in R.
+  outcomeR-=((p*0.0014)/riskUnit);
+  outcomes.push(outcomeR);
   if(longHistory)nextAllowed=exitIndex+1;
  }
  const wins=outcomes.filter(x=>x>0),losses=outcomes.filter(x=>x<0),winRate=outcomes.length?wins.length/outcomes.length*100:0;
- const avgWin=mean(wins),avgLoss=Math.abs(mean(losses)),rr=avgLoss>0?avgWin/avgLoss:avgWin>0?99:0;
- const minimumTrades=20;
+ const grossProfit=wins.reduce((a,b)=>a+b,0),grossLoss=Math.abs(losses.reduce((a,b)=>a+b,0));
+ const rr=grossLoss>0?grossProfit/Math.max(1,wins.length)/(grossLoss/Math.max(1,losses.length)):grossProfit>0?99:0;
+ const profitFactor=grossLoss>0?grossProfit/grossLoss:grossProfit>0?99:0;
+ const expectancyR=mean(outcomes),minimumTrades=30;
  const fastPeriod=variant===0?9:variant===1?12:variant===2?20:variant===3?8:14,slowPeriod=variant===0?21:variant===1?26:variant===2?50:variant===3?18:34;
  const currentFast=ema(closes,fastPeriod),currentSlow=ema(closes,slowPeriod),currentRsi=rsi(closes),currentPrice=closes[closes.length-1];
  const currentPriorHigh=Math.max(...c.slice(Math.max(0,c.length-21),c.length-1).map(x=>x.h));
  const currentMomentum=currentPrice/closes[Math.max(0,closes.length-6)]-1;
  const currentEntry=variant===0?currentFast>currentSlow&&currentRsi>50&&currentRsi<68:variant===1?currentFast>currentSlow&&currentRsi>45&&currentRsi<62:variant===2?currentPrice>currentPriorHigh&&currentRsi<72:variant===3?currentMomentum>0.002&&currentRsi<70:currentFast>currentSlow&&currentMomentum>0&&currentRsi>48&&currentRsi<65;
- const passed=outcomes.length>=minimumTrades&&winRate>=55&&rr>=1.2;
- return {runs,samples:outcomes.length,trades:outcomes.length,minimumTrades,winRate:Number(winRate.toFixed(1)),rewardRisk:Number(rr.toFixed(2)),passed,currentEntry};
+ const passed=outcomes.length>=minimumTrades&&expectancyR>=0.05&&profitFactor>=1.1;
+ const rejectionReason=outcomes.length<minimumTrades?"Échantillon insuffisant ("+outcomes.length+"/"+minimumTrades+")":expectancyR<0.05?"Espérance nette insuffisante ("+expectancyR.toFixed(2)+" R)":profitFactor<1.1?"Profit factor insuffisant ("+profitFactor.toFixed(2)+")":!currentEntry?"Backtest positif, mais aucun signal d’entrée actuel":"";
+ return {runs,samples:outcomes.length,trades:outcomes.length,minimumTrades,winRate:Number(winRate.toFixed(1)),rewardRisk:Number(rr.toFixed(2)),profitFactor:Number(profitFactor.toFixed(2)),expectancyR:Number(expectancyR.toFixed(3)),passed,currentEntry,rejectionReason};
 }
 export async function runAgentPipeline(input:Input){
  const {item,candles:c,price,ema20,ema50,rsi:rv,atr:a}=input,closes=c.map(x=>x.c),last=c.at(-1)!,prior=c.at(-2)!;
@@ -71,7 +75,7 @@ export async function runAgentPipeline(input:Input){
  const news=await headlines(item),newsVotes=wordSets.map((_,i)=>{const score=sentiment(news,i);return {name:["Macroéconomie mondiale","Banques centrales et régulation","Géopolitique et offre","Actualités sectorielles"][i],score,bias:score>=2?"HAUSSIER":score<=-2?"BAISSIER":"NEUTRE",detail:news.length?news.length+" titres récents analysés":"Aucune actualité exploitable · neutre"};});
  input.onProgress?.([...technical.map(x=>({...x,group:"TECHNIQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),...newsVotes.map(x=>({...x,group:"ACTUALITÉS",ok:x.bias!=="BAISSIER",verdict:x.bias}))]);
  const simulations=Array.from({length:5},(_,i)=>({name:["Simulation EMA / RSI","Simulation pullback","Simulation breakout","Simulation momentum","Simulation multi-facteurs"][i],...backtest(c,i)}));
- input.onProgress?.([...technical.map(x=>({...x,group:"TECHNIQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),...newsVotes.map(x=>({...x,group:"ACTUALITÉS",ok:x.bias!=="BAISSIER",verdict:x.bias})),...simulations.map(x=>({...x,group:"BACKTEST "+x.runs, ok:x.passed&&x.currentEntry,verdict:x.passed?(x.currentEntry?"VALIDÉ · SIGNAL ACTUEL":"VALIDÉ · ATTENTE"):"REFUSÉ",detail:x.runs+" tests · "+x.trades+" trades · "+x.winRate+"% réussite · R/R "+x.rewardRisk+" · "+(x.currentEntry?"entrée actuelle confirmée":"pas d’entrée actuelle")}))]);
+ input.onProgress?.([...technical.map(x=>({...x,group:"TECHNIQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),...newsVotes.map(x=>({...x,group:"ACTUALITÉS",ok:x.bias!=="BAISSIER",verdict:x.bias})),...simulations.map(x=>({...x,group:"BACKTEST "+x.runs, ok:x.passed&&x.currentEntry,verdict:x.passed?(x.currentEntry?"VALIDÉ · SIGNAL ACTUEL":"VALIDÉ · ATTENTE"):"REFUSÉ",detail:x.runs+" bougies · "+x.trades+"/"+x.minimumTrades+" trades · "+x.winRate+"% gagnants · PF "+x.profitFactor+" · espérance "+x.expectancyR+" R · "+(x.passed?(x.currentEntry?"historique validé + entrée actuelle":"historique validé, attente signal"):x.rejectionReason)}))]);
  const stopDistance=1.5*a,stopLoss=price-stopDistance,riskBudget=Math.max(0,input.riskBudget),qtyRisk=stopDistance>0?riskBudget/stopDistance:0;
  // Cap the quantity by BOTH available cash and the configured per-order notional.
  // Previously the 12% cash cap could exceed maxOrderNotional and reject every otherwise valid signal.
