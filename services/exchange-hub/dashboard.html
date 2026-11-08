@@ -111,7 +111,7 @@ function renderActivity(d,agents){
  $("activityHeadline").textContent=!running?"Démarre le moteur pour afficher les étapes d’analyse.":processing?processing+" marché(s) en cours dans le pipeline · "+fresh+"/"+total+" marchés actualisés.":fresh===total?"Dernier état reçu pour les "+total+" marchés · prochain cycle automatique.":fresh+"/"+total+" marchés ont envoyé un état récent · actualisation automatique toutes les 5 secondes.";
  $("activityProgress").style.width=progress+"%";
  $("activityMarkets").textContent=fresh+" / "+total;
- $("activityAgents").textContent=executed+" / "+(total*19);
+ $("activityAgents").textContent=executed+" / "+(total*agentsPerMarket);
  $("activitySignals").textContent=signals;
  $("activityPositions").textContent=Number(d.openPositions)||0;
  $("activityEvents").innerHTML=activityEvents.map(ev=>'<div class="activityEvent"><time>'+new Date(ev.time).toLocaleTimeString("fr-FR")+'</time><div><b>'+esc(ev.symbol)+' · '+esc(ev.state)+'</b><small>'+esc(ev.detail)+'</small></div></div>').join("")||'<div class="muted">Le journal se remplira dès réception des premiers états du moteur.</div>';
