@@ -192,7 +192,7 @@ async function scanTestnetAccount(account:any){
    }
    if(!signal)continue;
    const cooling=await db`SELECT 1 FROM testnet_auto_cooldowns WHERE telegram_user_id=${uid} AND symbol=${m.symbol} AND cooldown_until>NOW()`;if(cooling.length){cooldownSkipped++;continue;}
-   const pending=await db`SELECT 1 FROM testnet_auto_orders WHERE telegram_user_id=${uid} AND symbol=${m.symbol.replace(/USDT$/,"/USDT")} AND side='BUY' AND status NOT IN ('closed','filled','canceled','rejected') LIMIT 1`;if(pending.length){pendingOrders++;continue;}
+   const pending=await db`SELECT 1 FROM testnet_auto_orders WHERE telegram_user_id=${uid} AND symbol=${m.symbol.replace(/USDT$/,"/USDT")} AND side='BUY' AND status NOT IN ('closed','filled','canceled','rejected','expired','expired_in_match') LIMIT 1`;if(pending.length){pendingOrders++;continue;}
    const running=await db`SELECT status FROM testnet_auto_accounts WHERE telegram_user_id=${uid}`;
    if(!running.length||running[0].status!=="RUNNING")return {scanned,errors,orders,stopped:true};
    const count=await db`SELECT COUNT(*)::int AS n FROM testnet_auto_positions WHERE telegram_user_id=${uid}`;
