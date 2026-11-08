@@ -196,26 +196,14 @@ async function scanTestnetAccount(account:any){
       const distance=vol*1.5;
       await db`INSERT INTO testnet_auto_positions(telegram_user_id,symbol,quantity,entry_price,stop_price,target_price,highest_price) VALUES(${uid},${m.symbol},${filled},${average},${average-distance},${average+distance*2},${average}) ON CONFLICT(telegram_user_id,symbol) DO NOTHING`;
       orders++;
-      void telegram("🟢 JAMALQUANT · ACHAT TESTNET
-"+m.symbol+"
-Quantité exécutée : "+fmt(filled)+"
-Prix moyen : "+fmt(average)+"
-Stop : "+fmt(average-distance)+"
-Objectif 2R : "+fmt(average+distance*2)+"
-Stratégie : "+String(po.reason||"Consensus validé")+"
-Votes : "+Number(vote.bullishVotes||0)+"/19 · RSI "+rv.toFixed(1)+"
-Fonds fictifs Binance Testnet.",uid).catch(()=>{});
+      void telegram("🟢 JAMALQUANT · ACHAT TESTNET\n"+m.symbol+"\nQuantité exécutée : "+fmt(filled)+"\nPrix moyen : "+fmt(average)+"\nStop : "+fmt(average-distance)+"\nObjectif 2R : "+fmt(average+distance*2)+"\nStratégie : "+String(po.reason||"Consensus validé")+"\nVotes : "+Number(vote.bullishVotes||0)+"/19 · RSI "+rv.toFixed(1)+"\nFonds fictifs Binance Testnet.",uid).catch(()=>{});
      }else{
       const fillState=await applyTestnetSellFill(uid,m.symbol,filled);
       if(fillState.closed){
        await db`INSERT INTO testnet_auto_cooldowns(telegram_user_id,symbol,cooldown_until) VALUES(${uid},${m.symbol},NOW()+INTERVAL '5 minutes') ON CONFLICT(telegram_user_id,symbol) DO UPDATE SET cooldown_until=EXCLUDED.cooldown_until`;
       }
       orders++;
-      void telegram("🔴 JAMALQUANT · VENTE TESTNET
-"+m.symbol+"
-Quantité exécutée : "+fmt(filled)+"
-Prix moyen : "+fmt(average)+"
-Statut : "+status,uid).catch(()=>{});
+      void telegram("🔴 JAMALQUANT · VENTE TESTNET\n"+m.symbol+"\nQuantité exécutée : "+fmt(filled)+"\nPrix moyen : "+fmt(average)+"\nStatut : "+status,uid).catch(()=>{});
      }
     }else{pendingOrders++;}
     continue;
@@ -233,11 +221,7 @@ Statut : "+status,uid).catch(()=>{});
        await db`INSERT INTO testnet_auto_cooldowns(telegram_user_id,symbol,cooldown_until) VALUES(${uid},${m.symbol},NOW()+INTERVAL '5 minutes') ON CONFLICT(telegram_user_id,symbol) DO UPDATE SET cooldown_until=EXCLUDED.cooldown_until`;
       }
       orders++;
-      void telegram("🔴 JAMALQUANT · VENTE TESTNET
-"+m.symbol+"
-Quantité exécutée : "+fmt(filled)+"
-Prix moyen : "+fmt(average)+"
-Statut : "+String(result.status),uid).catch(()=>{});
+      void telegram("🔴 JAMALQUANT · VENTE TESTNET\n"+m.symbol+"\nQuantité exécutée : "+fmt(filled)+"\nPrix moyen : "+fmt(average)+"\nStatut : "+String(result.status),uid).catch(()=>{});
      }else{pendingOrders++;}
     }
     continue;
@@ -257,15 +241,7 @@ Statut : "+String(result.status),uid).catch(()=>{});
     const distance=vol*1.5,stop=average-distance,target=average+distance*2;
     await db`INSERT INTO testnet_auto_positions(telegram_user_id,symbol,quantity,entry_price,stop_price,target_price,highest_price) VALUES(${uid},${m.symbol},${filled},${average},${stop},${target},${average}) ON CONFLICT(telegram_user_id,symbol) DO NOTHING`;
     orders++;
-    void telegram("🟢 JAMALQUANT · ACHAT TESTNET
-"+m.symbol+"
-Quantité exécutée : "+fmt(filled)+"
-Prix moyen : "+fmt(average)+"
-Stop : "+fmt(stop)+"
-Objectif 2R : "+fmt(target)+"
-Stratégie : "+String(vote.selectedStrategy?.name||"Consensus validé")+"
-Votes : "+Number(vote.bullishVotes||0)+"/19 · RSI "+rv.toFixed(1)+"
-Fonds fictifs Binance Testnet.",uid).catch(()=>{});
+    void telegram("🟢 JAMALQUANT · ACHAT TESTNET\n"+m.symbol+"\nQuantité exécutée : "+fmt(filled)+"\nPrix moyen : "+fmt(average)+"\nStop : "+fmt(stop)+"\nObjectif 2R : "+fmt(target)+"\nStratégie : "+String(vote.selectedStrategy?.name||"Consensus validé")+"\nVotes : "+Number(vote.bullishVotes||0)+"/19 · RSI "+rv.toFixed(1)+"\nFonds fictifs Binance Testnet.",uid).catch(()=>{});
    }
   }catch(err){errors++;console.warn("Testnet scan failed",item.symbol,err instanceof Error?err.message:String(err));}
  }
