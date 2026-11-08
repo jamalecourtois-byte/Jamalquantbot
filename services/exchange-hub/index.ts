@@ -76,7 +76,7 @@ Bun.serve({port:Number(Bun.env.PORT||3000),websocket:{
    if(!validSymbols.has(symbol))return json({ok:false,error:"Symbole Yahoo non autorisé"},400);
    const requested=u.searchParams.get("timeframe")||"1m",intervalMap:Record<string,string>={"1m":"1m","5m":"5m","15m":"15m","1h":"60m","4h":"60m","1d":"1d"};
    const interval=intervalMap[requested];if(!interval)return json({ok:false,error:"Timeframe Yahoo non pris en charge"},400);
-   const range=requested==="1d"?"1mo":requested==="1h"||requested==="4h"?"5d":"1d";
+   const range=requested==="1d"?"1mo":requested==="1m"||requested==="5m"||requested==="15m"?"5d":"5d";
    try{
     const endpoint="https://query1.finance.yahoo.com/v8/finance/chart/"+encodeURIComponent(symbol)+"?range="+range+"&interval="+interval+"&includePrePost=false";
     const response=await fetch(endpoint,{headers:{"accept":"application/json","user-agent":"Mozilla/5.0 (compatible; JamalQuant/1.0)"},signal:AbortSignal.timeout(15000)});
