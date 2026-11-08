@@ -60,6 +60,20 @@ if(url.pathname==="/miniapp/auto"&&request.method==="POST"){
     const result=await callAutoEngine("/testnet/start",{userId});return corsJson({ok:true,...result,data:result});
    }
    const capital=Number(body.capital);if(!Number.isFinite(capital)||capital<10||capital>1000000)return corsJson({ok:false,error:"Capital fictif compris entre 10 et 1 000 000 USDT."},{status:400});
+   // Les deux moteurs sont exclusifs. Arrêter Testnet automatiquement uniquement
+   // si aucune position n'est ouverte ; ne jamais fermer une position à la place de l'utilisateur.
+   if(isAdmin){
+    try{
+     const testnet=await callAutoEngine("/testnet/status",{userId});
+     if(String(testnet.status||"").toUpperCase()==="RUNNING"){
+      if(Number(testnet.openPositions||0)>0)return corsJson({ok:false,error:"Binance Testnet est encore actif avec "+Number(testnet.openPositions)+" position(s) ouverte(s). Ferme-les ou arrête Testnet avant de lancer la Simulation."},{status:409});
+      await callAutoEngine("/testnet/stop",{userId});
+     }
+    }catch(error){
+     console.warn("Testnet preflight before paper start failed:",error instanceof Error?error.message:String(error));
+     return corsJson({ok:false,error:"Impossible de vérifier l'état de Binance Testnet. Aucun moteur n'a été démarré. Réessaie après avoir vérifié Testnet."},{status:503});
+    }
+   }
    const result=await callAutoEngine("/start",{userId,symbol:"AUTO",capital});
    return corsJson({ok:true,...result,data:{...result,mode:"PAPER"}});
   }
