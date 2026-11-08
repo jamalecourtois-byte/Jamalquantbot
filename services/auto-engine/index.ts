@@ -114,8 +114,8 @@ async function scanPortfolio(account:any,positions:any[]){
    if(!signal)continue;
    const exists=await db`SELECT 1 FROM paper_auto_positions WHERE telegram_user_id=${uid} AND symbol=${m.symbol}`;if(exists.length)continue;const cooling=await db`SELECT 1 FROM paper_auto_cooldowns WHERE telegram_user_id=${uid} AND symbol=${m.symbol} AND cooldown_until>NOW()`;if(cooling.length){cooldownSkipped++;continue;}
    const balanceRows=await db`SELECT cash FROM paper_auto_portfolios WHERE telegram_user_id=${uid} AND status='RUNNING'`;if(!balanceRows.length)continue;const availableCash=Number(balanceRows[0].cash);
-   const ep=m.price*(1+0.0002),distance=vol*1.5,budget=Math.min(Number(account.initial_capital)*0.003,availableCash*0.01),qtyRisk=budget/distance,qtyCash=availableCash*0.12/ep,qty=Math.min(qtyRisk,qtyCash),notional=qty*ep,fee=notional*0.0005,cost=notional+fee;
-   if(!(qty>0&&notional>=10&&cost<=availableCash*0.2)){minimumOrderSkipped++;continue;}
+   const ep=m.price*(1+0.0002),distance=vol*1.5,qty=availableCash/(ep*1.0005),notional=qty*ep,fee=notional*0.0005,cost=notional+fee;
+   if(!(qty>0&&notional>=10&&cost<=availableCash)){minimumOrderSkipped++;continue;}
    const stop=ep-distance,target=ep+distance*2;
    const inserted=await db.begin(async(tx:any)=>{
     const debited=await tx`UPDATE paper_auto_portfolios SET cash=cash-${cost},updated_at=NOW() WHERE telegram_user_id=${uid} AND status='RUNNING' AND cash>=${cost} RETURNING cash`;
