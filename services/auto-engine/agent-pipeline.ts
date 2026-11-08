@@ -87,11 +87,13 @@ export async function runAgentPipeline(input:Input){
  const quantity=price>0?Math.max(0,input.availableCash/price):0,notional=quantity*price;
  const technicalVotes=technical.filter(x=>x.ok).length;
  const newsSupportVotes=newsVotes.filter(x=>x.bias!=="BAISSIER").length;
- const simulationPasses=simulations.filter(x=>x.passed).length;\n const confirmationVotes=confirmations.filter(x=>x.ok).length;
+ const simulationPasses=simulations.filter(x=>x.passed).length;
+ const confirmationVotes=confirmations.filter(x=>x.ok).length;
  const eligibleStrategies=simulations.filter(x=>x.passed&&x.currentEntry).sort((a,b)=>b.rewardRisk-a.rewardRisk||b.winRate-a.winRate);
  const selectedStrategy=eligibleStrategies[0]||null;
  const techPass=technicalVotes>=3,newsPass=newsSupportVotes>=2,simPass=!!selectedStrategy;
- const confirmationPass=confirmationVotes>=2;\n const valid=techPass&&newsPass&&simPass&&confirmationPass;
+ const confirmationPass=confirmationVotes>=2;
+ const valid=techPass&&newsPass&&simPass&&confirmationPass;
  const rejectionReasons:string[]=[];if(!techPass)rejectionReasons.push("Technique "+technicalVotes+"/6 (minimum 3)");if(!newsPass)rejectionReasons.push("Actualités "+newsSupportVotes+"/4 (minimum 2)");if(!simPass)rejectionReasons.push("Aucune stratégie avec backtest validé ET signal actuel: "+simulations.map(x=>x.name+"="+x.rejectionReason).join(" | "));if(!confirmationPass)rejectionReasons.push("Confirmations complémentaires "+confirmationVotes+"/3 (minimum 2)");
  const gate={technicalVotes,totalTechnical:technical.length,newsSupportVotes,totalNews:newsVotes.length,simulationPasses,totalSimulations:simulations.length,confirmationVotes,totalConfirmations:confirmations.length,eligibleStrategies:eligibleStrategies.length,selectedStrategy:selectedStrategy?.name||null,rejectionReasons,valid};
  const agents=[...technical.map(x=>({...x,group:"TECHNIQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),...newsVotes.map(x=>({...x,group:"ACTUALITÉS",ok:x.bias!=="BAISSIER",verdict:x.bias})),...simulations.map(x=>({...x,group:"BACKTEST "+x.runs, ok:x.passed&&x.currentEntry,verdict:x.passed?(x.currentEntry?"VALIDÉ · SIGNAL ACTUEL":"VALIDÉ · ATTENTE"):"REFUSÉ",detail:x.runs+" tests · "+x.trades+" trades · "+x.winRate+"% réussite · R/R "+x.rewardRisk+" · "+(x.currentEntry?"entrée actuelle confirmée":"pas d’entrée actuelle")})),{name:"Agent 19 · Validation finale",group:"GATE FINAL",ok:valid,verdict:valid?"TRADE VALIDÉ":"PAS DE TRADE",detail:valid?"Technique "+technicalVotes+"/6 · Actualités "+newsSupportVotes+"/4 · Stratégie "+selectedStrategy?.name:"Filtres de signal non validés: "+rejectionReasons.join(" ; ")}];
