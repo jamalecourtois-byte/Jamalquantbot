@@ -23,6 +23,7 @@ await db`ALTER TABLE testnet_auto_orders ADD COLUMN IF NOT EXISTS requested_amou
 await db`ALTER TABLE testnet_auto_orders ADD COLUMN IF NOT EXISTS candle_time BIGINT NOT NULL DEFAULT 0`;
 await db`CREATE INDEX IF NOT EXISTS testnet_auto_orders_user_created_idx ON testnet_auto_orders(telegram_user_id,created_at DESC)`;
 await db`CREATE TABLE IF NOT EXISTS testnet_auto_cooldowns (telegram_user_id BIGINT NOT NULL, symbol TEXT NOT NULL, cooldown_until TIMESTAMPTZ NOT NULL, PRIMARY KEY(telegram_user_id,symbol))`;
+await db`CREATE TABLE IF NOT EXISTS testnet_auto_scan_state (telegram_user_id BIGINT PRIMARY KEY, scanned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), summary JSONB NOT NULL DEFAULT '{}'::jsonb)`;
 
 const fmt=(n:number)=>Number(n||0).toLocaleString("fr-FR",{minimumFractionDigits:2,maximumFractionDigits:2});
 const universe=[{symbol:"BTCUSDT",type:"crypto"},{symbol:"ETHUSDT",type:"crypto"},{symbol:"SOLUSDT",type:"crypto"},{symbol:"BNBUSDT",type:"crypto"},{symbol:"XRPUSDT",type:"crypto"},{symbol:"DOGEUSDT",type:"crypto"},{symbol:"LINKUSDT",type:"crypto"},{symbol:"AVAXUSDT",type:"crypto"},{symbol:"EURUSD=X",type:"forex"},{symbol:"GBPUSD=X",type:"forex"},{symbol:"GC=F",type:"commodity"},{symbol:"SI=F",type:"commodity"},{symbol:"CL=F",type:"commodity"},{symbol:"^GSPC",type:"index"},{symbol:"^IXIC",type:"index"},{symbol:"AAPL",type:"stock"},{symbol:"MSFT",type:"stock"},{symbol:"NVDA",type:"stock"},{symbol:"AMZN",type:"stock"}];
@@ -209,8 +210,10 @@ async function scanTestnetAccount(account:any){
    }
   }catch(err){errors++;console.warn("Testnet scan failed",item.symbol,err instanceof Error?err.message:String(err));}
  }
+ const summary={scanned,errors,signals,consensusRejected,riskRejected,orderRequests,pendingOrders,cooldownSkipped,positionLimitSkipped,budgetSkipped,orders,orderBudget,usdt,gateSummary};
  await db`UPDATE testnet_auto_accounts SET last_scan_at=NOW(),updated_at=NOW() WHERE telegram_user_id=${uid} AND status='RUNNING'`;
- return {scanned,errors,signals,consensusRejected,riskRejected,orderRequests,pendingOrders,cooldownSkipped,positionLimitSkipped,budgetSkipped,orders,orderBudget,usdt,gateSummary};
+ await db`INSERT INTO testnet_auto_scan_state(telegram_user_id,scanned_at,summary) VALUES(${uid},NOW(),${JSON.stringify(summary)}::jsonb) ON CONFLICT(telegram_user_id) DO UPDATE SET scanned_at=EXCLUDED.scanned_at,summary=EXCLUDED.summary`;
+ return summary;
 }
 async function testnetCycle(){
  if(testnetCycleBusy)return {testnetBusy:true};
@@ -315,12 +318,13 @@ async function handle(req:Request){
   const rows=await db`SELECT * FROM testnet_auto_accounts WHERE telegram_user_id=${userId}`;
   const positions=await db`SELECT * FROM testnet_auto_positions WHERE telegram_user_id=${userId} ORDER BY updated_at DESC`;
   const orders=await db`SELECT symbol,side,quantity,filled,average,cost,status,reason,created_at FROM testnet_auto_orders WHERE telegram_user_id=${userId} ORDER BY created_at DESC LIMIT 30`;
+  const scanRows=await db`SELECT scanned_at,summary FROM testnet_auto_scan_state WHERE telegram_user_id=${userId}`;
   let account:any=null,accountError="";try{account=await testnetRequest("/private/account",{exchange:"binance"});}catch(error){accountError=error instanceof Error?error.message:"Échec de connexion Binance Testnet";}
   const assets=account?.assets||[],usdt=Number(assets.find((x:any)=>x.asset==="USDT")?.total||0);
   const mappedPositions=positions.map((p:any)=>{const market=agentState.get(p.symbol)||{};return {symbol:p.symbol,marketType:"crypto",quantity:Number(p.quantity),entry:Number(p.entry_price),price:Number(market.price||p.entry_price),stop:Number(p.stop_price),target:Number(p.target_price)};});
   const invested=mappedPositions.reduce((sum:number,p:any)=>sum+p.quantity*p.price,0);
   const equity=usdt+invested,capital=Number(rows[0]?.starting_usdt||usdt);
-  return Response.json({ok:true,mode:"BINANCE_SPOT_TESTNET",status:rows[0]?.status||"STOPPED",environment:account?.environment||"unavailable",accountConnected:account?.accountConnected===true,connectionError:accountError||null,assets,capital,cash:usdt,available:usdt,invested,equity,pnl:equity-capital,openPositions:mappedPositions.length,positions:mappedPositions,trades:orders,universe:cryptoMarkets.length,markets:cryptoMarkets.map(x=>x.symbol),agents:cryptoMarkets.map(u=>agentState.get(u.symbol)||{symbol:u.symbol,type:"crypto",state:"INITIALISATION"}),equityHistory:[],lastScanAt:rows[0]?.last_scan_at?new Date(rows[0].last_scan_at).getTime():null,maxOrderUsdt:25,maxOpenPositions:2});
+  return Response.json({ok:true,mode:"BINANCE_SPOT_TESTNET",status:rows[0]?.status||"STOPPED",environment:account?.environment||"unavailable",accountConnected:account?.accountConnected===true,connectionError:accountError||null,assets,capital,cash:usdt,available:usdt,invested,equity,pnl:equity-capital,openPositions:mappedPositions.length,positions:mappedPositions,trades:orders,universe:cryptoMarkets.length,markets:cryptoMarkets.map(x=>x.symbol),agents:cryptoMarkets.map(u=>agentState.get(u.symbol)||{symbol:u.symbol,type:"crypto",state:"INITIALISATION"}),equityHistory:[],lastScanAt:rows[0]?.last_scan_at?new Date(rows[0].last_scan_at).getTime():null,scanSummary:scanRows[0]?.summary||null,scanSummaryAt:scanRows[0]?.scanned_at?new Date(scanRows[0].scanned_at).getTime():null,maxOrderUsdt:25,maxOpenPositions:2});
  }
  if(url.pathname==="/testnet/stop"){
   await db`UPDATE testnet_auto_accounts SET status='STOPPED',updated_at=NOW() WHERE telegram_user_id=${userId}`;
