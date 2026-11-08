@@ -397,9 +397,14 @@ async function handle(req:Request){
   for(const item of universe)agentState.set(agentKey(userId,item.symbol),{symbol:item.symbol,type:item.type,state:"EN ATTENTE DU SCAN",agentVotes:[],agentCount:0,updatedAt:0});
   const existing=await db`SELECT * FROM paper_auto_portfolios WHERE telegram_user_id=${userId}`;
   if(existing.length&&existing[0].status==="RUNNING")return Response.json({ok:true,status:"RUNNING",mode:"PAPER",alreadyRunning:true,capital:Number(existing[0].initial_capital),cash:Number(existing[0].cash),universe:universe.length,message:"Moteur déjà actif · portefeuille virtuel synchronisé."});
-  await db`INSERT INTO paper_auto_portfolios(telegram_user_id,initial_capital,cash,realized_pnl,status,updated_at) VALUES(${userId},${capital},${capital},0,'RUNNING',NOW()) ON CONFLICT(telegram_user_id) DO UPDATE SET initial_capital=EXCLUDED.initial_capital,cash=EXCLUDED.cash,realized_pnl=0,status='RUNNING',created_at=NOW(),updated_at=NOW(),last_scan_at=NULL`;
-  await db`DELETE FROM paper_auto_equity_history WHERE telegram_user_id=${userId}`;
-  await db`INSERT INTO paper_auto_equity_history(telegram_user_id,session_started_at,equity,pnl) VALUES(${userId},NOW(),${capital},0)`;
+  await db.begin(async(tx:any)=>{
+   await tx`DELETE FROM paper_auto_positions WHERE telegram_user_id=${userId}`;
+   await tx`DELETE FROM paper_auto_trades WHERE telegram_user_id=${userId}`;
+   await tx`DELETE FROM paper_auto_cooldowns WHERE telegram_user_id=${userId}`;
+   await tx`DELETE FROM paper_auto_equity_history WHERE telegram_user_id=${userId}`;
+   await tx`INSERT INTO paper_auto_portfolios(telegram_user_id,initial_capital,cash,realized_pnl,status,updated_at) VALUES(${userId},${capital},${capital},0,'RUNNING',NOW()) ON CONFLICT(telegram_user_id) DO UPDATE SET initial_capital=EXCLUDED.initial_capital,cash=EXCLUDED.cash,realized_pnl=0,status='RUNNING',created_at=NOW(),updated_at=NOW(),last_scan_at=NULL`;
+   await tx`INSERT INTO paper_auto_equity_history(telegram_user_id,session_started_at,equity,pnl) VALUES(${userId},NOW(),${capital},0)`;
+  });
   void cycle().catch(err=>console.error('Initial multi-market scan failed',err instanceof Error?err.message:String(err)));
   try{await telegram("🚀 JAMALQUANT MULTI-MARCHÉS ACTIVÉ\nCapital fictif : "+fmt(capital)+" USD\nUnivers : "+universe.length+" marchés (crypto, forex, matières premières, indices, actions)\nScan automatique toutes les ~60 secondes.\nMode simulation : aucun ordre réel, aucun gain garanti.",userId);}catch(err){console.warn("Start notification failed; paper portfolio remains active:",err instanceof Error?err.message:String(err));}
   return Response.json({ok:true,status:"RUNNING",mode:"PAPER",alreadyRunning:false,capital,universe:universe.length,markets:universe.map(x=>x.symbol),scanStarted:true,message:"Moteur démarré · premier scan lancé · portefeuille virtuel."});
