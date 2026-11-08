@@ -81,7 +81,7 @@ async function closePosition(row:any,price:number,reason:string,stop=false){
   await tx`INSERT INTO paper_auto_cooldowns(telegram_user_id,symbol,cooldown_until) VALUES(${row.telegram_user_id},${row.symbol},NOW()+INTERVAL '5 minutes') ON CONFLICT(telegram_user_id,symbol) DO UPDATE SET cooldown_until=EXCLUDED.cooldown_until`;
  });
  await recordPaperEquity(Number(row.telegram_user_id));
- void telegram("🔔 JAMALQUANT · SORTIE SIMULÉE\\n"+row.symbol+" ("+row.market_type+")\\n"+reason+"\\nP/L net estimé : "+(pnl>=0?"+":"")+fmt(pnl)+" USD\\nAucun ordre réel.",Number(row.telegram_user_id)).catch(err=>console.warn("Close notification failed:",err instanceof Error?err.message:String(err)));
+ void telegram("🔔 JAMALQUANT · SORTIE SIMULÉE\n"+row.symbol+" ("+row.market_type+")\n"+reason+"\nP/L net estimé : "+(pnl>=0?"+":"")+fmt(pnl)+" USD\nAucun ordre réel.",Number(row.telegram_user_id)).catch(err=>console.warn("Close notification failed:",err instanceof Error?err.message:String(err)));
 }
 async function scanPortfolio(account:any,positions:any[]){
  const uid=Number(account.telegram_user_id),now=Date.now();
@@ -132,7 +132,7 @@ async function scanPortfolio(account:any,positions:any[]){
     await tx`INSERT INTO paper_auto_trades(telegram_user_id,symbol,market_type,side,quantity,price,fee,reason) VALUES(${uid},${m.symbol},${m.type},'BUY',${qty},${ep},${fee},${String(vote.selectedStrategy?.name||"Signal validé")})`;
     return true;
    });
-   if(inserted){ordersOpened++;await recordPaperEquity(uid);agentState.set(agentKey(uid,m.symbol),{...agentState.get(agentKey(uid,m.symbol)),state:"EN POSITION",updatedAt:Date.now()});await telegram("🟢 JAMALQUANT · ENTRÉE SIMULÉE\\n"+m.symbol+" ("+m.type+")\\nPrix : "+fmt(ep)+"\\nStop : "+fmt(stop)+"\\nObjectif 2R : "+fmt(target)+"\\nRisque budgété : "+fmt(budget)+" USD\\nStratégie : "+String(vote.selectedStrategy?.name||"Signal validé")+"\\nRSI : "+rv.toFixed(1)+"\\nSimulation uniquement.",uid);}
+   if(inserted){ordersOpened++;await recordPaperEquity(uid);agentState.set(agentKey(uid,m.symbol),{...agentState.get(agentKey(uid,m.symbol)),state:"EN POSITION",updatedAt:Date.now()});await telegram("🟢 JAMALQUANT · ENTRÉE SIMULÉE\n"+m.symbol+" ("+m.type+")\nPrix : "+fmt(ep)+"\nStop : "+fmt(stop)+"\nObjectif 2R : "+fmt(target)+"\nRisque budgété : "+fmt(budget)+" USD\nStratégie : "+String(vote.selectedStrategy?.name||"Signal validé")+"\nRSI : "+rv.toFixed(1)+"\nSimulation uniquement.",uid);}
   }
  }
  await db`DELETE FROM paper_auto_decision_events WHERE telegram_user_id=${uid} AND mode='PAPER' AND id NOT IN (SELECT id FROM paper_auto_decision_events WHERE telegram_user_id=${uid} AND mode='PAPER' ORDER BY created_at DESC LIMIT 500)`;
@@ -401,7 +401,7 @@ async function handle(req:Request){
   await db`DELETE FROM paper_auto_equity_history WHERE telegram_user_id=${userId}`;
   await db`INSERT INTO paper_auto_equity_history(telegram_user_id,session_started_at,equity,pnl) VALUES(${userId},NOW(),${capital},0)`;
   void cycle().catch(err=>console.error('Initial multi-market scan failed',err instanceof Error?err.message:String(err)));
-  try{await telegram("🚀 JAMALQUANT MULTI-MARCHÉS ACTIVÉ\\nCapital fictif : "+fmt(capital)+" USD\\nUnivers : "+universe.length+" marchés (crypto, forex, matières premières, indices, actions)\\nScan automatique toutes les ~60 secondes.\\nMode simulation : aucun ordre réel, aucun gain garanti.",userId);}catch(err){console.warn("Start notification failed; paper portfolio remains active:",err instanceof Error?err.message:String(err));}
+  try{await telegram("🚀 JAMALQUANT MULTI-MARCHÉS ACTIVÉ\nCapital fictif : "+fmt(capital)+" USD\nUnivers : "+universe.length+" marchés (crypto, forex, matières premières, indices, actions)\nScan automatique toutes les ~60 secondes.\nMode simulation : aucun ordre réel, aucun gain garanti.",userId);}catch(err){console.warn("Start notification failed; paper portfolio remains active:",err instanceof Error?err.message:String(err));}
   return Response.json({ok:true,status:"RUNNING",mode:"PAPER",alreadyRunning:false,capital,universe:universe.length,markets:universe.map(x=>x.symbol),scanStarted:true,message:"Moteur démarré · premier scan lancé · portefeuille virtuel."});
  }
  if(url.pathname==="/status"){
