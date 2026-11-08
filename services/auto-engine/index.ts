@@ -105,10 +105,10 @@ async function scanPortfolio(account:any,positions:any[]){
     if(!debited.length)return false;
     const made=await tx`INSERT INTO paper_auto_positions(telegram_user_id,symbol,market_type,quantity,entry_price,entry_fee,mark_price,stop_price,target_price,highest_price,initial_risk,last_candle_time,updated_at) VALUES(${uid},${m.symbol},${m.type},${qty},${ep},${fee},${m.price},${stop},${target},${ep},${distance},${last.t},NOW()) ON CONFLICT(telegram_user_id,symbol) DO NOTHING RETURNING symbol`;
     if(!made.length){await tx`UPDATE paper_auto_portfolios SET cash=cash+${cost} WHERE telegram_user_id=${uid}`;return false;}
-    await tx`INSERT INTO paper_auto_trades(telegram_user_id,symbol,market_type,side,quantity,price,fee,reason) VALUES(${uid},${m.symbol},${m.type},'BUY',${qty},${ep},${fee},'Signal EMA20/EMA50 + RSI + momentum')`;
+    await tx`INSERT INTO paper_auto_trades(telegram_user_id,symbol,market_type,side,quantity,price,fee,reason) VALUES(${uid},${m.symbol},${m.type},'BUY',${qty},${ep},${fee},${String(vote.selectedStrategy?.name||"Signal validé")})`;
     return true;
    });
-   if(inserted){agentState.set(m.symbol,{...agentState.get(m.symbol),state:"EN POSITION",updatedAt:Date.now()});await telegram("🟢 JAMALQUANT · ENTRÉE SIMULÉE\n"+m.symbol+" ("+m.type+")\nPrix : "+fmt(ep)+"\nStop : "+fmt(stop)+"\nObjectif 2R : "+fmt(target)+"\nRisque budgété : "+fmt(budget)+" USD\nRSI : "+rv.toFixed(1)+"\nSimulation uniquement.",uid);}
+   if(inserted){agentState.set(m.symbol,{...agentState.get(m.symbol),state:"EN POSITION",updatedAt:Date.now()});await telegram("🟢 JAMALQUANT · ENTRÉE SIMULÉE\n"+m.symbol+" ("+m.type+")\nPrix : "+fmt(ep)+"\nStop : "+fmt(stop)+"\nObjectif 2R : "+fmt(target)+"\nRisque budgété : "+fmt(budget)+" USD\nStratégie : "+String(vote.selectedStrategy?.name||"Signal validé")+"\nRSI : "+rv.toFixed(1)+"\nSimulation uniquement.",uid);}
   }
  }
  return {scanned:results.length,errors,markets:results.map(x=>x.symbol)};
@@ -129,7 +129,7 @@ async function testnetOrder(uid:number,symbol:string,side:"buy"|"sell",amount:nu
  const existing=await db`SELECT * FROM testnet_auto_orders WHERE client_order_id=${clientOrderId}`;
  const payload=side==="buy"?{symbol:normalized,side,quoteAmount:amount,clientOrderId}:{symbol:normalized,side,baseAmount:amount,clientOrderId};
  const result=await testnetRequest("/private/test-order",payload),o=result.order||{};
- await db`INSERT INTO testnet_auto_orders(telegram_user_id,client_order_id,exchange_order_id,symbol,side,quantity,filled,average,cost,status,reason,requested_amount,candle_time) VALUES(${uid},${clientOrderId},${String(o.id||"")},${normalized},${side.toUpperCase()},${Number(o.amount||0)},${Number(o.filled||0)},${Number(o.average||0)},${Number(o.cost||0)},${String(o.status||"orderRequests")},${reason},${amount},${candleTime}) ON CONFLICT(client_order_id) DO UPDATE SET exchange_order_id=EXCLUDED.exchange_order_id,quantity=EXCLUDED.quantity,filled=EXCLUDED.filled,average=EXCLUDED.average,cost=EXCLUDED.cost,status=EXCLUDED.status`;
+ await db`INSERT INTO testnet_auto_orders(telegram_user_id,client_order_id,exchange_order_id,symbol,side,quantity,filled,average,cost,status,reason,requested_amount,candle_time) VALUES(${uid},${clientOrderId},${String(o.id||"")},${normalized},${side.toUpperCase()},${Number(o.amount||0)},${Number(o.filled||0)},${Number(o.average||0)},${Number(o.cost||0)},${String(o.status||"submitted")},${reason},${amount},${candleTime}) ON CONFLICT(client_order_id) DO UPDATE SET exchange_order_id=EXCLUDED.exchange_order_id,quantity=EXCLUDED.quantity,filled=EXCLUDED.filled,average=EXCLUDED.average,cost=EXCLUDED.cost,status=EXCLUDED.status`;
  return {clientOrderId,...o};
 }
 async function scanTestnetAccount(account:any){
@@ -149,7 +149,7 @@ async function scanTestnetAccount(account:any){
    if(vote.valid)signals++;else if(Number(vote.gate?.riskPassed||0)<3)riskRejected++;else consensusRejected++;
    agentState.set(m.symbol,{symbol:m.symbol,type:"crypto",price:m.price,ema20:e20,ema50:e50,rsi:rv,trend:e20>e50?"HAUSSIER":"BAISSIER",signal,score:vote.bullishVotes,agentCount:vote.totalAgents,agentVotes:vote.agentVotes,pipelineValid:vote.valid,consensus:vote.consensus,newsBias:vote.newsBias,simulation:vote.simulation,risk:vote.risk,state:"TESTNET · "+(signal?"SIGNAL ACHAT":"ANALYSÉ · ATTENTE"),changePct:(m.price/cs[0].c-1)*100,spark:cs.slice(-40).map((x:any)=>x.c),chartCandles:cs.slice(-60).map((x:any)=>({t:x.t,o:x.o,h:x.h,l:x.l,c:x.c})),updatedAt:Date.now()});
    scanned++;
-   const pendingRows=await db`SELECT * FROM testnet_auto_orders WHERE telegram_user_id=${uid} AND symbol=${m.symbol.replace(/USDT$/,"/USDT")} AND status NOT IN ('closed','filled','canceled','rejected') ORDER BY created_at DESC LIMIT 1`;
+   const pendingRows=await db`SELECT * FROM testnet_auto_orders WHERE telegram_user_id=${uid} AND symbol=${m.symbol.replace(/USDT$/,"/USDT")} AND status NOT IN ('closed','filled','canceled','rejected','expired','expired_in_match') ORDER BY created_at DESC LIMIT 1`;
    if(pendingRows.length){
     const po=pendingRows[0],side=String(po.side).toLowerCase()==="buy"?"buy":"sell";
     const refreshed=await testnetOrder(uid,m.symbol,side,Number(po.requested_amount),String(po.reason),Number(po.candle_time));orderRequests++;
