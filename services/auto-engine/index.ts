@@ -119,7 +119,7 @@ async function scanPortfolio(account:any,positions:any[]){
    if(inserted){ordersOpened++;agentState.set(m.symbol,{...agentState.get(m.symbol),state:"EN POSITION",updatedAt:Date.now()});await telegram("🟢 JAMALQUANT · ENTRÉE SIMULÉE\n"+m.symbol+" ("+m.type+")\nPrix : "+fmt(ep)+"\nStop : "+fmt(stop)+"\nObjectif 2R : "+fmt(target)+"\nRisque budgété : "+fmt(budget)+" USD\nStratégie : "+String(vote.selectedStrategy?.name||"Signal validé")+"\nRSI : "+rv.toFixed(1)+"\nSimulation uniquement.",uid);}
   }
  }
- await db`DELETE FROM paper_auto_decision_events WHERE telegram_user_id=${uid} AND mode=$PAPER$ AND id NOT IN (SELECT id FROM paper_auto_decision_events WHERE telegram_user_id=${uid} AND mode=$PAPER$ ORDER BY created_at DESC LIMIT 500)`;
+ await db`DELETE FROM paper_auto_decision_events WHERE telegram_user_id=${uid} AND mode='PAPER' AND id NOT IN (SELECT id FROM paper_auto_decision_events WHERE telegram_user_id=${uid} AND mode='PAPER' ORDER BY created_at DESC LIMIT 500)`;
  const summary={scanned:results.length,errors,signals,consensusRejected,riskRejected,ordersOpened,marketClosed,minimumOrderSkipped,cooldownSkipped,markets:results.map(x=>x.symbol)};
  console.log("Paper portfolio scanner",uid,JSON.stringify(summary));
  return summary;
