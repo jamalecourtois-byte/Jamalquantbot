@@ -30,7 +30,8 @@ await db`CREATE TABLE IF NOT EXISTS testnet_auto_scan_state (telegram_user_id BI
 const fmt=(n:number)=>Number(n||0).toLocaleString("fr-FR",{minimumFractionDigits:2,maximumFractionDigits:2});
 const universe=[{symbol:"BTCUSDT",type:"crypto"},{symbol:"ETHUSDT",type:"crypto"},{symbol:"SOLUSDT",type:"crypto"},{symbol:"BNBUSDT",type:"crypto"},{symbol:"XRPUSDT",type:"crypto"},{symbol:"DOGEUSDT",type:"crypto"},{symbol:"LINKUSDT",type:"crypto"},{symbol:"AVAXUSDT",type:"crypto"},{symbol:"EURUSD=X",type:"forex"},{symbol:"GBPUSD=X",type:"forex"},{symbol:"GC=F",type:"commodity"},{symbol:"SI=F",type:"commodity"},{symbol:"CL=F",type:"commodity"},{symbol:"^GSPC",type:"index"},{symbol:"^IXIC",type:"index"},{symbol:"AAPL",type:"stock"},{symbol:"MSFT",type:"stock"},{symbol:"NVDA",type:"stock"},{symbol:"AMZN",type:"stock"}];
 const MIN_CAPITAL=100,MAX_CAPITAL=1000000;
-const agentState=new Map<string,any>();\nconst agentKey=(userId:number,symbol:string)=>String(userId)+":"+symbol;
+const agentState=new Map<string,any>();
+const agentKey=(userId:number,symbol:string)=>String(userId)+":"+symbol;
 const scanProgress=new Map<number,any>();
 const scanSummaries=new Map<number,any>();
 async function telegram(message:string,userId:number){if(!env.BOT_TOKEN)return;const r=await fetch("https://api.telegram.org/bot"+env.BOT_TOKEN+"/sendMessage",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({chat_id:userId,text:message}),signal:AbortSignal.timeout(10000)});if(!r.ok)throw new Error("Telegram HTTP "+r.status);}
@@ -80,7 +81,11 @@ async function closePosition(row:any,price:number,reason:string,stop=false){
   await tx`INSERT INTO paper_auto_cooldowns(telegram_user_id,symbol,cooldown_until) VALUES(${row.telegram_user_id},${row.symbol},NOW()+INTERVAL '5 minutes') ON CONFLICT(telegram_user_id,symbol) DO UPDATE SET cooldown_until=EXCLUDED.cooldown_until`;
  });
  await recordPaperEquity(Number(row.telegram_user_id));
- void telegram("🔔 JAMALQUANT · SORTIE SIMULÉE\n"+row.symbol+" ("+row.market_type+")\n"+reason+"\nP/L net estimé : "+(pnl>=0?"+":"")+fmt(pnl)+" USD\nAucun ordre réel.",Number(row.telegram_user_id)).catch(err=>console.warn("Close notification failed:",err instanceof Error?err.message:String(err)));
+ void telegram("🔔 JAMALQUANT · SORTIE SIMULÉE
+"+row.symbol+" ("+row.market_type+")
+"+reason+"
+P/L net estimé : "+(pnl>=0?"+":"")+fmt(pnl)+" USD
+Aucun ordre réel.",Number(row.telegram_user_id)).catch(err=>console.warn("Close notification failed:",err instanceof Error?err.message:String(err)));
 }
 async function scanPortfolio(account:any,positions:any[]){
  const uid=Number(account.telegram_user_id),now=Date.now();
@@ -125,7 +130,15 @@ async function scanPortfolio(account:any,positions:any[]){
     await tx`INSERT INTO paper_auto_trades(telegram_user_id,symbol,market_type,side,quantity,price,fee,reason) VALUES(${uid},${m.symbol},${m.type},'BUY',${qty},${ep},${fee},${String(vote.selectedStrategy?.name||"Signal validé")})`;
     return true;
    });
-   if(inserted){ordersOpened++;await recordPaperEquity(uid);agentState.set(agentKey(uid,m.symbol),{...agentState.get(agentKey(uid,m.symbol)),state:"EN POSITION",updatedAt:Date.now()});await telegram("🟢 JAMALQUANT · ENTRÉE SIMULÉE\n"+m.symbol+" ("+m.type+")\nPrix : "+fmt(ep)+"\nStop : "+fmt(stop)+"\nObjectif 2R : "+fmt(target)+"\nRisque budgété : "+fmt(budget)+" USD\nStratégie : "+String(vote.selectedStrategy?.name||"Signal validé")+"\nRSI : "+rv.toFixed(1)+"\nSimulation uniquement.",uid);}
+   if(inserted){ordersOpened++;await recordPaperEquity(uid);agentState.set(agentKey(uid,m.symbol),{...agentState.get(agentKey(uid,m.symbol)),state:"EN POSITION",updatedAt:Date.now()});await telegram("🟢 JAMALQUANT · ENTRÉE SIMULÉE
+"+m.symbol+" ("+m.type+")
+Prix : "+fmt(ep)+"
+Stop : "+fmt(stop)+"
+Objectif 2R : "+fmt(target)+"
+Risque budgété : "+fmt(budget)+" USD
+Stratégie : "+String(vote.selectedStrategy?.name||"Signal validé")+"
+RSI : "+rv.toFixed(1)+"
+Simulation uniquement.",uid);}
   }
  }
  await db`DELETE FROM paper_auto_decision_events WHERE telegram_user_id=${uid} AND mode='PAPER' AND id NOT IN (SELECT id FROM paper_auto_decision_events WHERE telegram_user_id=${uid} AND mode='PAPER' ORDER BY created_at DESC LIMIT 500)`;
@@ -195,14 +208,26 @@ async function scanTestnetAccount(account:any){
       const distance=vol*1.5;
       await db`INSERT INTO testnet_auto_positions(telegram_user_id,symbol,quantity,entry_price,stop_price,target_price,highest_price) VALUES(${uid},${m.symbol},${filled},${average},${average-distance},${average+distance*2},${average}) ON CONFLICT(telegram_user_id,symbol) DO NOTHING`;
       orders++;
-      void telegram("🟢 JAMALQUANT · ACHAT TESTNET\n"+m.symbol+"\nQuantité exécutée : "+fmt(filled)+"\nPrix moyen : "+fmt(average)+"\nStop : "+fmt(average-distance)+"\nObjectif 2R : "+fmt(average+distance*2)+"\nStratégie : "+String(po.reason||"Consensus validé")+"\nVotes : "+Number(vote.bullishVotes||0)+"/19 · RSI "+rv.toFixed(1)+"\nFonds fictifs Binance Testnet.",uid).catch(()=>{});
+      void telegram("🟢 JAMALQUANT · ACHAT TESTNET
+"+m.symbol+"
+Quantité exécutée : "+fmt(filled)+"
+Prix moyen : "+fmt(average)+"
+Stop : "+fmt(average-distance)+"
+Objectif 2R : "+fmt(average+distance*2)+"
+Stratégie : "+String(po.reason||"Consensus validé")+"
+Votes : "+Number(vote.bullishVotes||0)+"/19 · RSI "+rv.toFixed(1)+"
+Fonds fictifs Binance Testnet.",uid).catch(()=>{});
      }else{
       const fillState=await applyTestnetSellFill(uid,m.symbol,filled);
       if(fillState.closed){
        await db`INSERT INTO testnet_auto_cooldowns(telegram_user_id,symbol,cooldown_until) VALUES(${uid},${m.symbol},NOW()+INTERVAL '5 minutes') ON CONFLICT(telegram_user_id,symbol) DO UPDATE SET cooldown_until=EXCLUDED.cooldown_until`;
       }
       orders++;
-      void telegram("🔴 JAMALQUANT · VENTE TESTNET\n"+m.symbol+"\nQuantité exécutée : "+fmt(filled)+"\nPrix moyen : "+fmt(average)+"\nStatut : "+status,uid).catch(()=>{});
+      void telegram("🔴 JAMALQUANT · VENTE TESTNET
+"+m.symbol+"
+Quantité exécutée : "+fmt(filled)+"
+Prix moyen : "+fmt(average)+"
+Statut : "+status,uid).catch(()=>{});
      }
     }else{pendingOrders++;}
     continue;
@@ -220,7 +245,11 @@ async function scanTestnetAccount(account:any){
        await db`INSERT INTO testnet_auto_cooldowns(telegram_user_id,symbol,cooldown_until) VALUES(${uid},${m.symbol},NOW()+INTERVAL '5 minutes') ON CONFLICT(telegram_user_id,symbol) DO UPDATE SET cooldown_until=EXCLUDED.cooldown_until`;
       }
       orders++;
-      void telegram("🔴 JAMALQUANT · VENTE TESTNET\n"+m.symbol+"\nQuantité exécutée : "+fmt(filled)+"\nPrix moyen : "+fmt(average)+"\nStatut : "+String(result.status),uid).catch(()=>{});
+      void telegram("🔴 JAMALQUANT · VENTE TESTNET
+"+m.symbol+"
+Quantité exécutée : "+fmt(filled)+"
+Prix moyen : "+fmt(average)+"
+Statut : "+String(result.status),uid).catch(()=>{});
      }else{pendingOrders++;}
     }
     continue;
@@ -240,7 +269,15 @@ async function scanTestnetAccount(account:any){
     const distance=vol*1.5,stop=average-distance,target=average+distance*2;
     await db`INSERT INTO testnet_auto_positions(telegram_user_id,symbol,quantity,entry_price,stop_price,target_price,highest_price) VALUES(${uid},${m.symbol},${filled},${average},${stop},${target},${average}) ON CONFLICT(telegram_user_id,symbol) DO NOTHING`;
     orders++;
-    void telegram("🟢 JAMALQUANT · ACHAT TESTNET\n"+m.symbol+"\nQuantité exécutée : "+fmt(filled)+"\nPrix moyen : "+fmt(average)+"\nStop : "+fmt(stop)+"\nObjectif 2R : "+fmt(target)+"\nStratégie : "+String(vote.selectedStrategy?.name||"Consensus validé")+"\nVotes : "+Number(vote.bullishVotes||0)+"/19 · RSI "+rv.toFixed(1)+"\nFonds fictifs Binance Testnet.",uid).catch(()=>{});
+    void telegram("🟢 JAMALQUANT · ACHAT TESTNET
+"+m.symbol+"
+Quantité exécutée : "+fmt(filled)+"
+Prix moyen : "+fmt(average)+"
+Stop : "+fmt(stop)+"
+Objectif 2R : "+fmt(target)+"
+Stratégie : "+String(vote.selectedStrategy?.name||"Consensus validé")+"
+Votes : "+Number(vote.bullishVotes||0)+"/19 · RSI "+rv.toFixed(1)+"
+Fonds fictifs Binance Testnet.",uid).catch(()=>{});
    }
   }catch(err){errors++;console.warn("Testnet scan failed",item.symbol,err instanceof Error?err.message:String(err));}
  }
@@ -394,7 +431,11 @@ async function handle(req:Request){
   await db`DELETE FROM paper_auto_equity_history WHERE telegram_user_id=${userId}`;
   await db`INSERT INTO paper_auto_equity_history(telegram_user_id,session_started_at,equity,pnl) VALUES(${userId},NOW(),${capital},0)`;
   void cycle().catch(err=>console.error('Initial multi-market scan failed',err instanceof Error?err.message:String(err)));
-  try{await telegram("🚀 JAMALQUANT MULTI-MARCHÉS ACTIVÉ\nCapital fictif : "+fmt(capital)+" USD\nUnivers : "+universe.length+" marchés (crypto, forex, matières premières, indices, actions)\nScan automatique toutes les ~60 secondes.\nMode simulation : aucun ordre réel, aucun gain garanti.",userId);}catch(err){console.warn("Start notification failed; paper portfolio remains active:",err instanceof Error?err.message:String(err));}
+  try{await telegram("🚀 JAMALQUANT MULTI-MARCHÉS ACTIVÉ
+Capital fictif : "+fmt(capital)+" USD
+Univers : "+universe.length+" marchés (crypto, forex, matières premières, indices, actions)
+Scan automatique toutes les ~60 secondes.
+Mode simulation : aucun ordre réel, aucun gain garanti.",userId);}catch(err){console.warn("Start notification failed; paper portfolio remains active:",err instanceof Error?err.message:String(err));}
   return Response.json({ok:true,status:"RUNNING",mode:"PAPER",alreadyRunning:false,capital,universe:universe.length,markets:universe.map(x=>x.symbol),scanStarted:true,message:"Moteur démarré · premier scan lancé · portefeuille virtuel."});
  }
  if(url.pathname==="/status"){
