@@ -31,7 +31,7 @@ const agentState=new Map<string,any>();
 async function telegram(message:string,userId:number){if(!env.BOT_TOKEN)return;const r=await fetch("https://api.telegram.org/bot"+env.BOT_TOKEN+"/sendMessage",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({chat_id:userId,text:message}),signal:AbortSignal.timeout(10000)});if(!r.ok)throw new Error("Telegram HTTP "+r.status);}
 async function getMarket(item:any){
  if(item.type==="crypto"){
-  const pair=item.symbol,hub=String(env.EXCHANGE_HUB_URL||"https://jamalquant-exchange-hub-production.up.railway.app").replace(/\\/$/,""),symbol=pair.replace(/USDT$/,"/USDT");
+  const pair=item.symbol,hub=String(env.EXCHANGE_HUB_URL||"https://jamalquant-exchange-hub-production.up.railway.app").replace(/\/$/,""),symbol=pair.replace(/USDT$/,"/USDT");
   if(!hub)throw new Error("Exchange Hub non configuré pour "+pair);
   const [pr,cr]=await Promise.all([
    fetch(hub+"/ticker?"+new URLSearchParams({exchange:"binance",symbol}),{signal:AbortSignal.timeout(15000)}),
