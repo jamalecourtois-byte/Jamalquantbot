@@ -270,8 +270,11 @@ export async function handlePrivateConnectorRequest(req: Request): Promise<Respo
         } else {
           const base = symbol.split("/")[0];
           const freeBase = Number(balance?.free?.[base] || 0);
-          if (freeBase < baseAmount) return json({ ok: false, error: "Solde disponible insuffisant pour cette vente.", available: freeBase }, 409);
-          amount = Number(client.amountToPrecision(symbol, baseAmount));
+          if (!Number.isFinite(freeBase) || freeBase <= 0) return json({ ok: false, error: "Aucun solde disponible pour cette vente.", available: freeBase }, 409);
+          // Base-asset fees or an external partial sale can leave the free balance
+          // below the tracked quantity. Never oversell: use only what is free.
+          const sellableBase = Math.min(baseAmount, freeBase);
+          amount = Number(client.amountToPrecision(symbol, sellableBase));
           if (!Number.isFinite(amount) || amount <= 0) return json({ ok: false, error: "Quantité arrondie invalide." }, 400);
           const estimatedQuote = amount * price;
           if (!Number.isFinite(estimatedQuote) || estimatedQuote <= 0 || estimatedQuote > 50.5) {
