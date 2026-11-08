@@ -26,24 +26,27 @@ export async function warmNews(items:Market[]){await Promise.all(items.map(item=
 function sentiment(titles:string[],set:number){let score=0;for(const title of titles){const t=title.toLowerCase();for(const w of wordSets[set].up)if(t.includes(w))score++;for(const w of wordSets[set].down)if(t.includes(w))score--;}return clamp(score,-8,8);}
 function backtest(c:Candle[],variant:number){
  const closes=c.map(x=>x.c),outcomes:number[]=[];
- // Use a longer rolling sample when the feed provides it; keep a valid EMA warm-up
- // and reserve 12 future candles to resolve each simulated trade.
- const runs=Math.min(500,Math.max(0,c.length-63)),first=c.length-runs-13,last=first+runs-1;
+ // Long Testnet histories use up to 900 candidate bars and sequential trades
+ // (no overlapping positions). Short Yahoo histories retain the 100-bar sample.
+ const longHistory=c.length>=800,runs=longHistory?Math.min(900,c.length-63):Math.min(100,Math.max(0,c.length-63));
+ const first=c.length-runs-13,last=first+runs-1;let nextAllowed=first;
  for(let i=first;i<=last;i++){
+  if(longHistory&&i<nextAllowed)continue;
   const history=closes.slice(0,i+1),fast=ema(history,variant===0?9:variant===1?12:variant===2?20:variant===3?8:14),slow=ema(history,variant===0?21:variant===1?26:variant===2?50:variant===3?18:34);
   const rv=rsi(closes,i),a=atrAt(c,i),p=closes[i];if(!(a>0&&p>0))continue;
   const priorHigh=Math.max(...c.slice(Math.max(0,i-20),i).map(x=>x.h));
   const momentum=p/closes[Math.max(0,i-5)]-1;
   const entry=variant===0?fast>slow&&rv>50&&rv<68:variant===1?fast>slow&&rv>45&&rv<62:variant===2?p>priorHigh&&rv<72:variant===3?momentum>0.002&&rv<70:fast>slow&&momentum>0&&rv>48&&rv<65;
   if(!entry)continue;
-  const stop=p-1.5*a,target=p+3*a;let outcome=0;
-  for(let j=i+1;j<=Math.min(i+12,c.length-1);j++){const bar=c[j];if(bar.l<=stop){outcome=-1;break;}if(bar.h>=target){outcome=2;break;}}
-  if(outcome===0){const close=c[Math.min(i+12,c.length-1)].c;outcome=close>p?0.25:-0.25;}
+  const stop=p-1.5*a,target=p+3*a;let outcome=0,exitIndex=Math.min(i+12,c.length-1);
+  for(let j=i+1;j<=exitIndex;j++){const bar=c[j];if(bar.l<=stop){outcome=-1;exitIndex=j;break;}if(bar.h>=target){outcome=2;exitIndex=j;break;}}
+  if(outcome===0){const close=c[exitIndex].c;outcome=close>p?0.25:-0.25;}
   outcomes.push(outcome);
+  if(longHistory)nextAllowed=exitIndex+1;
  }
  const wins=outcomes.filter(x=>x>0),losses=outcomes.filter(x=>x<0),winRate=outcomes.length?wins.length/outcomes.length*100:0;
  const avgWin=mean(wins),avgLoss=Math.abs(mean(losses)),rr=avgLoss>0?avgWin/avgLoss:avgWin>0?99:0;
- const minimumTrades=Math.max(20,Math.ceil(runs*0.10));
+ const minimumTrades=20;
  return {runs,samples:outcomes.length,trades:outcomes.length,minimumTrades,winRate:Number(winRate.toFixed(1)),rewardRisk:Number(rr.toFixed(2)),passed:outcomes.length>=minimumTrades&&winRate>=55&&rr>=1.2};
 }
 export async function runAgentPipeline(input:Input){
