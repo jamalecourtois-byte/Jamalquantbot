@@ -31,12 +31,17 @@ const agentState=new Map<string,any>();
 async function telegram(message:string,userId:number){if(!env.BOT_TOKEN)return;const r=await fetch("https://api.telegram.org/bot"+env.BOT_TOKEN+"/sendMessage",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({chat_id:userId,text:message}),signal:AbortSignal.timeout(10000)});if(!r.ok)throw new Error("Telegram HTTP "+r.status);}
 async function getMarket(item:any){
  if(item.type==="crypto"){
-  const pair=item.symbol;
-  const [pr,cr]=await Promise.all([fetch("https://data-api.binance.vision/api/v3/ticker/price?symbol="+pair,{signal:AbortSignal.timeout(8000)}),fetch("https://data-api.binance.vision/api/v3/klines?symbol="+pair+"&interval=5m&limit=1000",{signal:AbortSignal.timeout(12000)})]);
-  const pj:any=await pr.json(),rows:any=await cr.json();const price=Number(pj.price);
-  if(!pr.ok||!cr.ok||!Number.isFinite(price)||!Array.isArray(rows))throw new Error("Binance data unavailable "+pair);
-  const now=Date.now(),candles=rows.map((x:any[])=>({t:+x[0],end:+x[6],o:+x[1],h:+x[2],l:+x[3],c:+x[4],v:+x[5]})).filter((x:any)=>[x.t,x.end,x.o,x.h,x.l,x.c].every(Number.isFinite)&&x.end<now-1000&&x.l>0&&x.h>=Math.max(x.o,x.c)&&x.l<=Math.min(x.o,x.c)&&x.h>=x.l);
-  if(candles.length<800||now-candles[candles.length-1].end>660000)throw new Error("Bougies 5m insuffisantes ou anciennes "+pair);
+  const pair=item.symbol,hub=String(env.EXCHANGE_HUB_URL||"https://jamalquant-exchange-hub-production.up.railway.app").replace(/\\/$/,""),symbol=pair.replace(/USDT$/,"/USDT");
+  if(!hub)throw new Error("Exchange Hub non configuré pour "+pair);
+  const [pr,cr]=await Promise.all([
+   fetch(hub+"/ticker?"+new URLSearchParams({exchange:"binance",symbol}),{signal:AbortSignal.timeout(15000)}),
+   fetch(hub+"/ohlcv?"+new URLSearchParams({exchange:"binance",symbol,timeframe:"5m",limit:"1000"}),{signal:AbortSignal.timeout(20000)})
+  ]);
+  const pj:any=await pr.json().catch(()=>({})),cj:any=await cr.json().catch(()=>({}));
+  const rows=cj.candles,price=Number(pj.last);
+  if(!pr.ok||pj.ok!==true||!Number.isFinite(price)||!cr.ok||cj.ok!==true||!Array.isArray(rows))throw new Error("Exchange Hub Binance data unavailable "+pair+": "+String(pj.error||cj.error||"réponse invalide"));
+  const now=Date.now(),candles=rows.map((x:any[])=>({t:+x[0],end:+x[0]+300000-1,o:+x[1],h:+x[2],l:+x[3],c:+x[4],v:+x[5]})).filter((x:any)=>[x.t,x.end,x.o,x.h,x.l,x.c].every(Number.isFinite)&&x.end<now-1000&&x.l>0&&x.h>=Math.max(x.o,x.c)&&x.l<=Math.min(x.o,x.c)&&x.h>=x.l);
+  if(candles.length<800||now-candles[candles.length-1].end>660000)throw new Error("Bougies 5m insuffisantes ou anciennes "+pair+" ("+candles.length+")");
   return { ...item,price,candles:candles.slice(-1000),currency:"USDT",marketOpen:true,dataAgeMs:0 };
  }
  const url=new URL("https://query1.finance.yahoo.com/v8/finance/chart/"+encodeURIComponent(item.symbol));
