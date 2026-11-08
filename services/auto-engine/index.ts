@@ -77,18 +77,18 @@ async function scanPortfolio(account:any,positions:any[]){
  const uid=Number(account.telegram_user_id),now=Date.now();
  await warmNews(universe);
  const held=new Map(positions.map((p:any)=>[p.symbol,p]));
- const results:any[]=[];let errors=0;
+ const results:any[]=[];let errors=0,signals=0,consensusRejected=0,riskRejected=0,ordersOpened=0,marketClosed=0,minimumOrderSkipped=0,cooldownSkipped=0;
  for(let i=0;i<universe.length;i+=6){
   const batch=universe.slice(i,i+6);
   const settled=await Promise.allSettled(batch.map(getMarket));
   for(let j=0;j<settled.length;j++){
    const s=settled[j];if(s.status==="rejected"){errors++;const reason=String(s.reason);agentState.set(batch[j].symbol,{...(agentState.get(batch[j].symbol)||{}),symbol:batch[j].symbol,type:batch[j].type,state:/FERM/.test(reason)?"MARCHÉ FERMÉ":"DONNÉES INDISPONIBLES",updatedAt:Date.now()});console.warn("Market scan failed",batch[j].symbol,reason);continue;}
    const m=s.value,cs=m.candles,closes=cs.map((x:any)=>x.c),e20=ema(closes,20),e50=ema(closes,50),rv=rsi(closes),vol=atr(cs),last=cs[cs.length-1],prev=cs[cs.length-2];
-   const vote=await runAgentPipeline({item:m,candles:cs,price:m.price,ema20:e20,ema50:e50,rsi:rv,atr:vol,riskBudget:Math.min(Number(account.initial_capital)*0.003,Number(account.cash)*0.01),availableCash:Number(account.cash),maxOrderNotional:Number(account.cash)*0.12,minimumOrderNotional:10,onProgress:(rows:any[])=>{const current=agentState.get(m.symbol)||{};agentState.set(m.symbol,{...current,symbol:m.symbol,type:m.type,price:m.price,ema20:e20,ema50:e50,rsi:rv,trend:e20>e50?"HAUSSIER":"BAISSIER",pipelineValid:false,agentVotes:rows.map(x=>({name:x.name,bullish:!!x.ok,verdict:x.verdict,group:x.group,detail:x.detail||""})),agentCount:19,state:"ANALYSE DES AGENTS "+rows.length+"/19",updatedAt:Date.now()});}});const signal=vote.valid;const decision=signal?"SIGNAL_VALIDÉ":Number(vote.gate?.riskPassed||0)<3?"REJET_RISQUE":"REJET_CONSENSUS";const decisionReason=signal?"Consensus, stratégie historique et contrôles de risque validés":Number(vote.gate?.riskPassed||0)<3?"Contrôle de risque refusé":"Seuil de consensus ou stratégie historique non validé";await db`INSERT INTO paper_auto_decision_events(telegram_user_id,mode,symbol,market_type,price,decision,reason,strategy,agent_votes,backtests,technical_votes,news_votes,risk_passed) VALUES(${uid},'PAPER',${m.symbol},${m.type},${m.price},${decision},${decisionReason},${String(vote.selectedStrategy?.name||"")},${JSON.stringify(vote.agentVotes)}::jsonb,${JSON.stringify(vote.simulation||[])}::jsonb,${Number(vote.gate?.technicalVotes||0)},${Number(vote.gate?.newsSupportVotes||0)},${Number(vote.gate?.riskPassed||0)})`;
+   const vote=await runAgentPipeline({item:m,candles:cs,price:m.price,ema20:e20,ema50:e50,rsi:rv,atr:vol,riskBudget:Math.min(Number(account.initial_capital)*0.003,Number(account.cash)*0.01),availableCash:Number(account.cash),maxOrderNotional:Number(account.cash)*0.12,minimumOrderNotional:10,onProgress:(rows:any[])=>{const current=agentState.get(m.symbol)||{};agentState.set(m.symbol,{...current,symbol:m.symbol,type:m.type,price:m.price,ema20:e20,ema50:e50,rsi:rv,trend:e20>e50?"HAUSSIER":"BAISSIER",pipelineValid:false,agentVotes:rows.map(x=>({name:x.name,bullish:!!x.ok,verdict:x.verdict,group:x.group,detail:x.detail||""})),agentCount:19,state:"ANALYSE DES AGENTS "+rows.length+"/19",updatedAt:Date.now()});}});const signal=vote.valid;if(signal)signals++;else if(Number(vote.gate?.riskPassed||0)<3)riskRejected++;else consensusRejected++;const decision=signal?"SIGNAL_VALIDÉ":Number(vote.gate?.riskPassed||0)<3?"REJET_RISQUE":"REJET_CONSENSUS";const decisionReason=signal?"Consensus, stratégie historique et contrôles de risque validés":(Array.isArray(vote.gate?.rejectionReasons)?vote.gate.rejectionReasons.join(" ; "):"Motif détaillé indisponible");await db`INSERT INTO paper_auto_decision_events(telegram_user_id,mode,symbol,market_type,price,decision,reason,strategy,agent_votes,backtests,technical_votes,news_votes,risk_passed) VALUES(${uid},'PAPER',${m.symbol},${m.type},${m.price},${decision},${decisionReason},${String(vote.selectedStrategy?.name||"")},${JSON.stringify(vote.agentVotes)}::jsonb,${JSON.stringify(vote.simulation||[])}::jsonb,${Number(vote.gate?.technicalVotes||0)},${Number(vote.gate?.newsSupportVotes||0)},${Number(vote.gate?.riskPassed||0)})`;
    agentState.set(m.symbol,{symbol:m.symbol,type:m.type,price:m.price,ema20:e20,ema50:e50,rsi:rv,trend:e20>e50?"HAUSSIER":"BAISSIER",signal:Boolean(m.marketOpen)&&signal,score:vote.bullishVotes,agentCount:vote.totalAgents,agentVotes:vote.agentVotes,pipelineValid:vote.valid,consensus:vote.consensus,newsBias:vote.newsBias,simulation:vote.simulation,risk:vote.risk,state:!m.marketOpen?"MARCHÉ FERMÉ · ANALYSE HISTORIQUE":held.has(m.symbol)?"EN POSITION":signal?"CONSENSUS ACHAT":"ANALYSÉ · ATTENTE",changePct:(m.price/cs[0].c-1)*100,spark:cs.slice(-40).map((x:any)=>x.c),chartCandles:cs.slice(-60).map((x:any)=>({t:x.t,o:x.o,h:x.h,l:x.l,c:x.c})),dataAgeMinutes:Math.round((Number(m.dataAgeMs)||0)/60000),updatedAt:Date.now()});
    results.push(m);
    // Closed markets remain analyzable from their last valid candles, but never generate paper orders or stale-price exits.
-   if(!m.marketOpen)continue;
+   if(!m.marketOpen){marketClosed++;continue;}
    const pos:any=held.get(m.symbol);
    if(pos){
     const entry=Number(pos.entry_price),risk=Number(pos.initial_risk),high=Math.max(Number(pos.highest_price),m.price);
@@ -103,10 +103,10 @@ async function scanPortfolio(account:any,positions:any[]){
    const fresh=await db`SELECT status FROM paper_auto_portfolios WHERE telegram_user_id=${uid}`;
    if(!fresh.length||fresh[0].status!=="RUNNING")return;
    if(!signal)continue;
-   const exists=await db`SELECT 1 FROM paper_auto_positions WHERE telegram_user_id=${uid} AND symbol=${m.symbol}`;if(exists.length)continue;const cooling=await db`SELECT 1 FROM paper_auto_cooldowns WHERE telegram_user_id=${uid} AND symbol=${m.symbol} AND cooldown_until>NOW()`;if(cooling.length)continue;
+   const exists=await db`SELECT 1 FROM paper_auto_positions WHERE telegram_user_id=${uid} AND symbol=${m.symbol}`;if(exists.length)continue;const cooling=await db`SELECT 1 FROM paper_auto_cooldowns WHERE telegram_user_id=${uid} AND symbol=${m.symbol} AND cooldown_until>NOW()`;if(cooling.length){cooldownSkipped++;continue;}
    const balanceRows=await db`SELECT cash FROM paper_auto_portfolios WHERE telegram_user_id=${uid} AND status='RUNNING'`;if(!balanceRows.length)continue;const availableCash=Number(balanceRows[0].cash);
    const ep=m.price*(1+0.0002),distance=vol*1.5,budget=Math.min(Number(account.initial_capital)*0.003,availableCash*0.01),qtyRisk=budget/distance,qtyCash=availableCash*0.12/ep,qty=Math.min(qtyRisk,qtyCash),notional=qty*ep,fee=notional*0.0005,cost=notional+fee;
-   if(!(qty>0&&notional>=10&&cost<=availableCash*0.2))continue;
+   if(!(qty>0&&notional>=10&&cost<=availableCash*0.2)){minimumOrderSkipped++;continue;}
    const stop=ep-distance,target=ep+distance*2;
    const inserted=await db.begin(async(tx:any)=>{
     const debited=await tx`UPDATE paper_auto_portfolios SET cash=cash-${cost},updated_at=NOW() WHERE telegram_user_id=${uid} AND status='RUNNING' AND cash>=${cost} RETURNING cash`;
@@ -116,11 +116,13 @@ async function scanPortfolio(account:any,positions:any[]){
     await tx`INSERT INTO paper_auto_trades(telegram_user_id,symbol,market_type,side,quantity,price,fee,reason) VALUES(${uid},${m.symbol},${m.type},'BUY',${qty},${ep},${fee},${String(vote.selectedStrategy?.name||"Signal validé")})`;
     return true;
    });
-   if(inserted){agentState.set(m.symbol,{...agentState.get(m.symbol),state:"EN POSITION",updatedAt:Date.now()});await telegram("🟢 JAMALQUANT · ENTRÉE SIMULÉE\n"+m.symbol+" ("+m.type+")\nPrix : "+fmt(ep)+"\nStop : "+fmt(stop)+"\nObjectif 2R : "+fmt(target)+"\nRisque budgété : "+fmt(budget)+" USD\nStratégie : "+String(vote.selectedStrategy?.name||"Signal validé")+"\nRSI : "+rv.toFixed(1)+"\nSimulation uniquement.",uid);}
+   if(inserted){ordersOpened++;agentState.set(m.symbol,{...agentState.get(m.symbol),state:"EN POSITION",updatedAt:Date.now()});await telegram("🟢 JAMALQUANT · ENTRÉE SIMULÉE\n"+m.symbol+" ("+m.type+")\nPrix : "+fmt(ep)+"\nStop : "+fmt(stop)+"\nObjectif 2R : "+fmt(target)+"\nRisque budgété : "+fmt(budget)+" USD\nStratégie : "+String(vote.selectedStrategy?.name||"Signal validé")+"\nRSI : "+rv.toFixed(1)+"\nSimulation uniquement.",uid);}
   }
  }
- return {scanned:results.length,errors,markets:results.map(x=>x.symbol)};
-  await db`DELETE FROM paper_auto_decision_events WHERE telegram_user_id=${uid} AND mode=$$PAPER$$ AND id NOT IN (SELECT id FROM paper_auto_decision_events WHERE telegram_user_id=${uid} AND mode=$$PAPER$$ ORDER BY created_at DESC LIMIT 500)`;
+ await db`DELETE FROM paper_auto_decision_events WHERE telegram_user_id=${uid} AND mode=$PAPER$ AND id NOT IN (SELECT id FROM paper_auto_decision_events WHERE telegram_user_id=${uid} AND mode=$PAPER$ ORDER BY created_at DESC LIMIT 500)`;
+ const summary={scanned:results.length,errors,signals,consensusRejected,riskRejected,ordersOpened,marketClosed,minimumOrderSkipped,cooldownSkipped,markets:results.map(x=>x.symbol)};
+ console.log("Paper portfolio scanner",uid,JSON.stringify(summary));
+ return summary;
 }
 
 async function testnetRequest(path:string,payload:any){
@@ -243,6 +245,7 @@ async function testnetCycle(){
  testnetCycleBusy=true;
  try{
   const accounts=await db`SELECT * FROM testnet_auto_accounts WHERE status='RUNNING' ORDER BY updated_at ASC`;
+  if(!accounts.length)console.log("Binance Spot Testnet scanner idle: aucun compte RUNNING");
   for(const account of accounts){
    if(account.last_scan_at&&Date.now()-new Date(account.last_scan_at).getTime()<55000)continue;
    try{const result=await scanTestnetAccount(account);console.log("Binance Spot Testnet scanner",account.telegram_user_id,JSON.stringify(result));}
