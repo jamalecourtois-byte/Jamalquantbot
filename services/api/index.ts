@@ -75,7 +75,7 @@ if(url.pathname==="/miniapp/auto"&&request.method==="POST"){
     if(!isAdmin)return corsJson({ok:false,error:"Le mode Binance Testnet est réservé à l’administrateur."},{status:403});
     const result=await callAutoEngine("/testnet/start",{userId});return corsJson({ok:true,...result,data:result});
    }
-   const capital=Number(body.capital);if(!Number.isFinite(capital)||capital<10||capital>1000000)return corsJson({ok:false,error:"Capital fictif compris entre 10 et 1 000 000 USDT."},{status:400});
+   const capital=Number(body.capital);if(!Number.isFinite(capital)||capital<100||capital>1000000)return corsJson({ok:false,error:"Capital fictif compris entre 100 et 1 000 000 USDT."},{status:400});
    // Les deux moteurs sont exclusifs. Arrêter Testnet automatiquement uniquement
    // si aucune position n'est ouverte ; ne jamais fermer une position à la place de l'utilisateur.
    if(isAdmin){
