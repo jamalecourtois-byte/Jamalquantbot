@@ -47,7 +47,13 @@ function backtest(c:Candle[],variant:number){
  const wins=outcomes.filter(x=>x>0),losses=outcomes.filter(x=>x<0),winRate=outcomes.length?wins.length/outcomes.length*100:0;
  const avgWin=mean(wins),avgLoss=Math.abs(mean(losses)),rr=avgLoss>0?avgWin/avgLoss:avgWin>0?99:0;
  const minimumTrades=20;
- return {runs,samples:outcomes.length,trades:outcomes.length,minimumTrades,winRate:Number(winRate.toFixed(1)),rewardRisk:Number(rr.toFixed(2)),passed:outcomes.length>=minimumTrades&&winRate>=55&&rr>=1.2};
+ const fastPeriod=variant===0?9:variant===1?12:variant===2?20:variant===3?8:14,slowPeriod=variant===0?21:variant===1?26:variant===2?50:variant===3?18:34;
+ const currentFast=ema(closes,fastPeriod),currentSlow=ema(closes,slowPeriod),currentRsi=rsi(closes),currentPrice=closes[closes.length-1];
+ const currentPriorHigh=Math.max(...c.slice(Math.max(0,c.length-21),c.length-1).map(x=>x.h));
+ const currentMomentum=currentPrice/closes[Math.max(0,closes.length-6)]-1;
+ const currentEntry=variant===0?currentFast>currentSlow&&currentRsi>50&&currentRsi<68:variant===1?currentFast>currentSlow&&currentRsi>45&&currentRsi<62:variant===2?currentPrice>currentPriorHigh&&currentRsi<72:variant===3?currentMomentum>0.002&&currentRsi<70:currentFast>currentSlow&&currentMomentum>0&&currentRsi>48&&currentRsi<65;
+ const passed=outcomes.length>=minimumTrades&&winRate>=55&&rr>=1.2;
+ return {runs,samples:outcomes.length,trades:outcomes.length,minimumTrades,winRate:Number(winRate.toFixed(1)),rewardRisk:Number(rr.toFixed(2)),passed,currentEntry};
 }
 export async function runAgentPipeline(input:Input){
  const {item,candles:c,price,ema20,ema50,rsi:rv,atr:a}=input,closes=c.map(x=>x.c),last=c.at(-1)!,prior=c.at(-2)!;
@@ -65,7 +71,7 @@ export async function runAgentPipeline(input:Input){
  const news=await headlines(item),newsVotes=wordSets.map((_,i)=>{const score=sentiment(news,i);return {name:["Macroéconomie mondiale","Banques centrales et régulation","Géopolitique et offre","Actualités sectorielles"][i],score,bias:score>=2?"HAUSSIER":score<=-2?"BAISSIER":"NEUTRE",detail:news.length?news.length+" titres récents analysés":"Aucune actualité exploitable · neutre"};});
  input.onProgress?.([...technical.map(x=>({...x,group:"TECHNIQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),...newsVotes.map(x=>({...x,group:"ACTUALITÉS",ok:x.bias!=="BAISSIER",verdict:x.bias}))]);
  const simulations=Array.from({length:5},(_,i)=>({name:["Simulation EMA / RSI","Simulation pullback","Simulation breakout","Simulation momentum","Simulation multi-facteurs"][i],...backtest(c,i)}));
- input.onProgress?.([...technical.map(x=>({...x,group:"TECHNIQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),...newsVotes.map(x=>({...x,group:"ACTUALITÉS",ok:x.bias!=="BAISSIER",verdict:x.bias})),...simulations.map(x=>({...x,group:"BACKTEST "+x.runs,ok:x.passed,verdict:x.passed?"VALIDÉ":"REFUSÉ",detail:x.runs+" simulations · "+x.trades+" signaux · "+x.winRate+"% réussite · R/R "+x.rewardRisk}))]);
+ input.onProgress?.([...technical.map(x=>({...x,group:"TECHNIQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),...newsVotes.map(x=>({...x,group:"ACTUALITÉS",ok:x.bias!=="BAISSIER",verdict:x.bias})),...simulations.map(x=>({...x,group:"BACKTEST "+x.runs, ok:x.passed&&x.currentEntry,verdict:x.passed?(x.currentEntry?"VALIDÉ · SIGNAL ACTUEL":"VALIDÉ · ATTENTE"):"REFUSÉ",detail:x.runs+" tests · "+x.trades+" trades · "+x.winRate+"% réussite · R/R "+x.rewardRisk+" · "+(x.currentEntry?"entrée actuelle confirmée":"pas d’entrée actuelle")}))]);
  const stopDistance=1.5*a,stopLoss=price-stopDistance,riskBudget=Math.max(0,input.riskBudget),qtyRisk=stopDistance>0?riskBudget/stopDistance:0;
  // Cap the quantity by BOTH available cash and the configured per-order notional.
  // Previously the 12% cash cap could exceed maxOrderNotional and reject every otherwise valid signal.
@@ -76,16 +82,18 @@ export async function runAgentPipeline(input:Input){
   {name:"Taille de position",ok:quantity>0&&notional<=input.maxOrderNotional&&notional<=input.availableCash*0.12,detail:"Quantité "+quantity.toPrecision(6)+" · exposition "+notional.toFixed(2)},
   {name:"Minimum d'ordre Binance",ok:notional>=(input.minimumOrderNotional??10),detail:"Notionnel "+notional.toFixed(2)+" · minimum "+(input.minimumOrderNotional??10).toFixed(2)}
  ];
- input.onProgress?.([...technical.map(x=>({...x,group:"TECHNIQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),...newsVotes.map(x=>({...x,group:"ACTUALITÉS",ok:x.bias!=="BAISSIER",verdict:x.bias})),...simulations.map(x=>({...x,group:"BACKTEST "+x.runs,ok:x.passed,verdict:x.passed?"VALIDÉ":"REFUSÉ",detail:x.runs+" simulations · "+x.trades+" signaux · "+x.winRate+"% réussite · R/R "+x.rewardRisk})),...risk.map(x=>({...x,group:"RISQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"}))]);
+ input.onProgress?.([...technical.map(x=>({...x,group:"TECHNIQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),...newsVotes.map(x=>({...x,group:"ACTUALITÉS",ok:x.bias!=="BAISSIER",verdict:x.bias})),...simulations.map(x=>({...x,group:"BACKTEST "+x.runs, ok:x.passed&&x.currentEntry,verdict:x.passed?(x.currentEntry?"VALIDÉ · SIGNAL ACTUEL":"VALIDÉ · ATTENTE"):"REFUSÉ",detail:x.runs+" tests · "+x.trades+" trades · "+x.winRate+"% réussite · R/R "+x.rewardRisk+" · "+(x.currentEntry?"entrée actuelle confirmée":"pas d’entrée actuelle")})),...risk.map(x=>({...x,group:"RISQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"}))]);
  const technicalVotes=technical.filter(x=>x.ok).length;
  const newsSupportVotes=newsVotes.filter(x=>x.bias!=="BAISSIER").length;
  const simulationPasses=simulations.filter(x=>x.passed).length;
- // Consensus robuste sans exiger 19 validations unanimes : 4/6 techniques,
- // 3/4 actualités et 3/5 backtests. Les trois contrôles de risque restent obligatoires.
- const techPass=technicalVotes>=4,newsPass=newsSupportVotes>=3,simPass=simulationPasses>=3,riskPass=risk.every(x=>x.ok);
+ // Les cinq backtests sont des stratégies alternatives, pas cinq votes indépendants.
+ // Une stratégie doit être validée historiquement ET déclencher son entrée sur la bougie actuelle.
+ const eligibleStrategies=simulations.filter(x=>x.passed&&x.currentEntry).sort((a,b)=>b.rewardRisk-a.rewardRisk||b.winRate-a.winRate);
+ const selectedStrategy=eligibleStrategies[0]||null;
+ const techPass=technicalVotes>=4,newsPass=newsSupportVotes>=3,simPass=!!selectedStrategy,riskPass=risk.every(x=>x.ok);
  const valid=techPass&&newsPass&&simPass&&riskPass;
- const gate={technicalVotes,totalTechnical:technical.length,newsSupportVotes,totalNews:newsVotes.length,simulationPasses,totalSimulations:simulations.length,riskPassed:risk.filter(x=>x.ok).length,totalRisk:risk.length,valid};
- const agents=[...technical.map(x=>({...x,group:"TECHNIQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),...newsVotes.map(x=>({...x,group:"ACTUALITÉS",ok:x.bias!=="BAISSIER",verdict:x.bias})),...simulations.map(x=>({...x,group:"BACKTEST "+x.runs,ok:x.passed,verdict:x.passed?"VALIDÉ":"REFUSÉ",detail:x.runs+" simulations · "+x.trades+" signaux · "+x.winRate+"% réussite · R/R "+x.rewardRisk})),...risk.map(x=>({...x,group:"RISQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),{name:"Agent 19 · Validation finale",group:"GATE FINAL",ok:valid,verdict:valid?"TRADE VALIDÉ":"PAS DE TRADE",detail:"Technique "+technicalVotes+"/6 (min. 4) · Actualités "+newsSupportVotes+"/4 (min. 3) · Backtests "+simulationPasses+"/5 (min. 3) · Risque "+(riskPass?"3/3 OK":"REFUSÉ")}];
+ const gate={technicalVotes,totalTechnical:technical.length,newsSupportVotes,totalNews:newsVotes.length,simulationPasses,totalSimulations:simulations.length,eligibleStrategies:eligibleStrategies.length,selectedStrategy:selectedStrategy?.name||null,riskPassed:risk.filter(x=>x.ok).length,totalRisk:risk.length,valid};
+ const agents=[...technical.map(x=>({...x,group:"TECHNIQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),...newsVotes.map(x=>({...x,group:"ACTUALITÉS",ok:x.bias!=="BAISSIER",verdict:x.bias})),...simulations.map(x=>({...x,group:"BACKTEST "+x.runs, ok:x.passed&&x.currentEntry,verdict:x.passed?(x.currentEntry?"VALIDÉ · SIGNAL ACTUEL":"VALIDÉ · ATTENTE"):"REFUSÉ",detail:x.runs+" tests · "+x.trades+" trades · "+x.winRate+"% réussite · R/R "+x.rewardRisk+" · "+(x.currentEntry?"entrée actuelle confirmée":"pas d’entrée actuelle")})),...risk.map(x=>({...x,group:"RISQUE",verdict:x.ok?"VALIDÉ":"REFUSÉ"})),{name:"Agent 19 · Validation finale",group:"GATE FINAL",ok:valid,verdict:valid?"TRADE VALIDÉ":"PAS DE TRADE",detail:"Technique "+technicalVotes+"/6 (min. 4) · Actualités "+newsSupportVotes+"/4 (min. 3) · Stratégie validée "+(selectedStrategy?.name||"aucune entrée actuelle")+" · Risque "+(riskPass?"3/3 OK":"REFUSÉ")}];
  input.onProgress?.(agents);
- return {valid,gate,agents,agentVotes:agents.map(x=>({name:x.name,bullish:!!x.ok,verdict:x.verdict,group:x.group,detail:x.detail||""})),bullishVotes:agents.filter(x=>x.ok).length,totalAgents:19,consensus:valid?"ACHAT":"PAS DE TRADE",newsBias:newsVotes.map(x=>x.bias),simulation:simulations,risk:{stopLoss,quantity,notional}};
+ return {valid,gate,agents,agentVotes:agents.map(x=>({name:x.name,bullish:!!x.ok,verdict:x.verdict,group:x.group,detail:x.detail||""})),bullishVotes:agents.filter(x=>x.ok).length,totalAgents:19,consensus:valid?"ACHAT · "+selectedStrategy.name:"PAS DE TRADE",selectedStrategy,newsBias:newsVotes.map(x=>x.bias),simulation:simulations,risk:{stopLoss,quantity,notional}};
 }
