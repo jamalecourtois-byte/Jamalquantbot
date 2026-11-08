@@ -327,6 +327,8 @@ async function handle(req:Request){
   if(account.environment!=="binance-spot-testnet"||account.accountConnected!==true)return Response.json({error:"Compte Binance Spot Testnet non vérifié."},{status:409});
   const usdt=Number((account.assets||[]).find((x:any)=>x.asset==="USDT")?.total||0);
   if(usdt<100)return Response.json({error:"Solde USDT Testnet insuffisant pour respecter le budget de risque : minimum 100 USDT requis (10 % maximum par ordre, ordre minimum 10 USDT). Scanner non démarré."},{status:409});
+  const paperActive=await db`SELECT status FROM paper_auto_portfolios WHERE telegram_user_id=${userId} AND status='RUNNING'`;
+  if(paperActive.length)return Response.json({error:"Arrête la Simulation avant de démarrer Binance Spot Testnet."},{status:409});
   const prior=await db`SELECT status,starting_usdt FROM testnet_auto_accounts WHERE telegram_user_id=${userId}`;
   const alreadyRunning=prior.length>0&&String(prior[0].status)==="RUNNING";
   if(!alreadyRunning){
@@ -369,6 +371,8 @@ async function handle(req:Request){
  }
  if(url.pathname==="/start"){
   const capital=Number(body.capital);if(!Number.isFinite(capital)||capital<MIN_CAPITAL||capital>MAX_CAPITAL)return Response.json({error:"Capital fictif invalide ("+MIN_CAPITAL+" à "+MAX_CAPITAL.toLocaleString("fr-FR")+" USDT)"},{status:400});
+  const testnetActive=await db`SELECT status FROM testnet_auto_accounts WHERE telegram_user_id=${userId} AND status='RUNNING'`;
+  if(testnetActive.length)return Response.json({error:"Arrête Binance Spot Testnet avant de démarrer la Simulation."},{status:409});
   const existing=await db`SELECT * FROM paper_auto_portfolios WHERE telegram_user_id=${userId}`;
   if(existing.length&&existing[0].status==="RUNNING")return Response.json({ok:true,status:"RUNNING",mode:"PAPER",alreadyRunning:true,capital:Number(existing[0].initial_capital),cash:Number(existing[0].cash),universe:universe.length,message:"Moteur déjà actif · portefeuille virtuel synchronisé."});
   await db`INSERT INTO paper_auto_portfolios(telegram_user_id,initial_capital,cash,realized_pnl,status,updated_at) VALUES(${userId},${capital},${capital},0,'RUNNING',NOW()) ON CONFLICT(telegram_user_id) DO UPDATE SET initial_capital=EXCLUDED.initial_capital,cash=EXCLUDED.cash,realized_pnl=0,status='RUNNING',created_at=NOW(),updated_at=NOW(),last_scan_at=NULL`;
