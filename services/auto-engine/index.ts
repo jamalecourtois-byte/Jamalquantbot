@@ -78,7 +78,7 @@ async function closePosition(row:any,price:number,reason:string,stop=false){
   await tx`UPDATE paper_auto_portfolios SET cash=cash+${proceeds},realized_pnl=realized_pnl+${pnl},updated_at=NOW() WHERE telegram_user_id=${row.telegram_user_id}`;
   await tx`INSERT INTO paper_auto_trades(telegram_user_id,symbol,market_type,side,quantity,price,fee,pnl,reason) VALUES(${row.telegram_user_id},${row.symbol},${row.market_type},'SELL',${qty},${exitPrice},${fee},${pnl},${reason})`;
   await tx`DELETE FROM paper_auto_positions WHERE telegram_user_id=${row.telegram_user_id} AND symbol=${row.symbol}`;
-  await tx`INSERT INTO paper_auto_cooldowns(telegram_user_id,symbol,cooldown_until) VALUES(${row.telegram_user_id},${row.symbol},NOW()+INTERVAL '5 minutes') ON CONFLICT(telegram_user_id,symbol) DO UPDATE SET cooldown_until=EXCLUDED.cooldown_until`;
+  await tx`INSERT INTO paper_auto_cooldowns(telegram_user_id,symbol,cooldown_until) VALUES(${row.telegram_user_id},${row.symbol},NOW()+INTERVAL '30 minutes') ON CONFLICT(telegram_user_id,symbol) DO UPDATE SET cooldown_until=EXCLUDED.cooldown_until`;
  });
  await recordPaperEquity(Number(row.telegram_user_id));
  void telegram("🔔 JAMALQUANT · SORTIE SIMULÉE\n"+row.symbol+" ("+row.market_type+")\n"+reason+"\nP/L net estimé : "+(pnl>=0?"+":"")+fmt(pnl)+" USD\nAucun ordre réel.",Number(row.telegram_user_id)).catch(err=>console.warn("Close notification failed:",err instanceof Error?err.message:String(err)));
@@ -103,8 +103,8 @@ async function scanPortfolio(account:any,positions:any[]){
    if(pos){
     const entry=Number(pos.entry_price),risk=Number(pos.initial_risk),high=Math.max(Number(pos.highest_price),m.price);
     let stop=Number(pos.stop_price);if(high>=entry+risk)stop=Math.max(stop,high-vol*1.2);
-    // PAPER ONLY: stop-loss exit disabled by explicit user request.
-    if(m.price>=Number(pos.target_price)){await closePosition(pos,m.price,"Objectif théorique 2R atteint");continue;}
+    if(m.price<=stop){await closePosition(pos,Math.min(m.price,stop),"Stop Loss déclenché",true);continue;}
+    if(m.price>=Number(pos.target_price)){await closePosition(pos,m.price,"Objectif net 2R atteint");continue;}
     if(e20<e50||rv<45){await closePosition(pos,m.price,"Momentum haussier invalidé");continue;}
     await db`UPDATE paper_auto_positions SET mark_price=${m.price},highest_price=${high},stop_price=${stop},updated_at=NOW() WHERE telegram_user_id=${uid} AND symbol=${m.symbol}`;
     agentState.set(agentKey(uid,m.symbol),{...agentState.get(agentKey(uid,m.symbol)),state:"EN POSITION",updatedAt:Date.now()});
@@ -116,14 +116,18 @@ async function scanPortfolio(account:any,positions:any[]){
    const exists=await db`SELECT 1 FROM paper_auto_positions WHERE telegram_user_id=${uid} AND symbol=${m.symbol}`;if(exists.length)continue;const cooling=await db`SELECT 1 FROM paper_auto_cooldowns WHERE telegram_user_id=${uid} AND symbol=${m.symbol} AND cooldown_until>NOW()`;if(cooling.length){cooldownSkipped++;continue;}
    const balanceRows=await db`SELECT cash FROM paper_auto_portfolios WHERE telegram_user_id=${uid} AND status='RUNNING'`;if(!balanceRows.length)continue;const availableCash=Number(balanceRows[0].cash);
    const ep=m.price*(1+0.0002),distance=vol*1.5;
-   // Taille calculée sur le risque budgété, puis plafonnée par le cash et le notionnel maximal.
    const budget=Math.min(Number(account.initial_capital)*0.003,availableCash*0.01);
    if(!(Number.isFinite(distance)&&distance>0&&Number.isFinite(budget)&&budget>0)){riskRejected++;continue;}
    const maxNotional=availableCash*0.12;
-   const qty=Math.min(budget/distance,maxNotional/ep,availableCash/(ep*1.0005));
+   const stop=ep-distance;
+   const stopExit=stop*(1-0.0002);
+   const riskPerUnit=ep*(1+0.0005)-stopExit*(1-0.0005);
+   if(!(Number.isFinite(riskPerUnit)&&riskPerUnit>0)){riskRejected++;continue;}
+   const qty=Math.min(budget/riskPerUnit,maxNotional/ep,availableCash/(ep*1.0005));
    const notional=qty*ep,fee=notional*0.0005,cost=notional+fee;
    if(!(Number.isFinite(qty)&&qty>0&&notional>=10&&notional<=maxNotional&&cost<=availableCash)){minimumOrderSkipped++;continue;}
-   const stop=ep-distance,target=ep+distance*2;
+   const stopProceeds=qty*stopExit*(1-0.0005),actualRisk=Math.max(0,cost-stopProceeds);
+   const target=(cost+2*actualRisk)/(qty*(1-0.0002)*(1-0.0005));
    const inserted=await db.begin(async(tx:any)=>{
     const debited=await tx`UPDATE paper_auto_portfolios SET cash=cash-${cost},updated_at=NOW() WHERE telegram_user_id=${uid} AND status='RUNNING' AND cash>=${cost} RETURNING cash`;
     if(!debited.length)return false;
@@ -132,7 +136,7 @@ async function scanPortfolio(account:any,positions:any[]){
     await tx`INSERT INTO paper_auto_trades(telegram_user_id,symbol,market_type,side,quantity,price,fee,reason) VALUES(${uid},${m.symbol},${m.type},'BUY',${qty},${ep},${fee},${String(vote.selectedStrategy?.name||"Signal validé")})`;
     return true;
    });
-   if(inserted){ordersOpened++;await recordPaperEquity(uid);agentState.set(agentKey(uid,m.symbol),{...agentState.get(agentKey(uid,m.symbol)),state:"EN POSITION",updatedAt:Date.now()});await telegram("🟢 JAMALQUANT · ENTRÉE SIMULÉE\n"+m.symbol+" ("+m.type+")\nPrix : "+fmt(ep)+"\nStop : "+fmt(stop)+"\nObjectif 2R : "+fmt(target)+"\nRisque budgété : "+fmt(budget)+" USD\nStratégie : "+String(vote.selectedStrategy?.name||"Signal validé")+"\nRSI : "+rv.toFixed(1)+"\nSimulation uniquement.",uid);}
+   if(inserted){ordersOpened++;await recordPaperEquity(uid);agentState.set(agentKey(uid,m.symbol),{...agentState.get(agentKey(uid,m.symbol)),state:"EN POSITION",updatedAt:Date.now()});await telegram("🟢 JAMALQUANT · ENTRÉE SIMULÉE\n"+m.symbol+" ("+m.type+")\nPrix : "+fmt(ep)+"\nStop : "+fmt(stop)+"\nObjectif 2R : "+fmt(target)+"\nRisque net calculé : "+fmt(actualRisk)+" USD\nStratégie : "+String(vote.selectedStrategy?.name||"Signal validé")+"\nRSI : "+rv.toFixed(1)+"\nSimulation uniquement.",uid);}
   }
  }
  await db`DELETE FROM paper_auto_decision_events WHERE telegram_user_id=${uid} AND mode='PAPER' AND id NOT IN (SELECT id FROM paper_auto_decision_events WHERE telegram_user_id=${uid} AND mode='PAPER' ORDER BY created_at DESC LIMIT 500)`;
