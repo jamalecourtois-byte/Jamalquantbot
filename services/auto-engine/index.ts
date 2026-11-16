@@ -30,6 +30,7 @@ await db`CREATE TABLE IF NOT EXISTS testnet_auto_scan_state (telegram_user_id BI
 const fmt=(n:number)=>Number(n||0).toLocaleString("fr-FR",{minimumFractionDigits:2,maximumFractionDigits:2});
 const universe=[{symbol:"BTCUSDT",type:"crypto"},{symbol:"ETHUSDT",type:"crypto"},{symbol:"SOLUSDT",type:"crypto"},{symbol:"BNBUSDT",type:"crypto"},{symbol:"XRPUSDT",type:"crypto"},{symbol:"DOGEUSDT",type:"crypto"},{symbol:"LINKUSDT",type:"crypto"},{symbol:"AVAXUSDT",type:"crypto"},{symbol:"EURUSD=X",type:"forex"},{symbol:"GBPUSD=X",type:"forex"},{symbol:"GC=F",type:"commodity"},{symbol:"SI=F",type:"commodity"},{symbol:"CL=F",type:"commodity"},{symbol:"^GSPC",type:"index"},{symbol:"^IXIC",type:"index"},{symbol:"AAPL",type:"stock"},{symbol:"MSFT",type:"stock"},{symbol:"NVDA",type:"stock"},{symbol:"AMZN",type:"stock"}];
 const MIN_CAPITAL=100,MAX_CAPITAL=1000000;
+const PAPER_MIN_HOLD_MINUTES=15;
 const agentState=new Map<string,any>();
 const agentKey=(userId:number,symbol:string)=>String(userId)+':'+symbol;
 const scanProgress=new Map<number,any>();
@@ -105,7 +106,11 @@ async function scanPortfolio(account:any,positions:any[]){
     let stop=Number(pos.stop_price);if(high>=entry+risk)stop=Math.max(stop,high-vol*1.2);
     if(m.price<=stop){await closePosition(pos,Math.min(m.price,stop),"Stop Loss déclenché",true);continue;}
     if(m.price>=Number(pos.target_price)){await closePosition(pos,m.price,"Objectif net 2R atteint");continue;}
-    if(e20<e50||rv<45){await closePosition(pos,m.price,"Momentum haussier invalidé");continue;}
+    if(e20<e50*0.999||rv<40){
+     const opened=await db`SELECT created_at FROM paper_auto_trades WHERE telegram_user_id=${uid} AND symbol=${m.symbol} AND side='BUY' ORDER BY created_at DESC LIMIT 1`;
+     const heldMinutes=opened.length?(Date.now()-new Date(opened[0].created_at).getTime())/60000:0;
+     if(heldMinutes>=PAPER_MIN_HOLD_MINUTES){await closePosition(pos,m.price,"Momentum haussier invalidé");continue;}
+    }
     await db`UPDATE paper_auto_positions SET mark_price=${m.price},highest_price=${high},stop_price=${stop},updated_at=NOW() WHERE telegram_user_id=${uid} AND symbol=${m.symbol}`;
     agentState.set(agentKey(uid,m.symbol),{...agentState.get(agentKey(uid,m.symbol)),state:"EN POSITION",updatedAt:Date.now()});
     continue;
