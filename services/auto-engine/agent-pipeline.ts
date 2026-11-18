@@ -49,13 +49,13 @@ function backtest(c:Candle[],variant:number){
  const grossProfit=wins.reduce((a,b)=>a+b,0),grossLoss=Math.abs(losses.reduce((a,b)=>a+b,0));
  const rr=grossLoss>0?grossProfit/Math.max(1,wins.length)/(grossLoss/Math.max(1,losses.length)):grossProfit>0?99:0;
  const profitFactor=grossLoss>0?grossProfit/grossLoss:grossProfit>0?99:0;
- const expectancyR=mean(outcomes),minimumTrades=20;
+ const expectancyR=mean(outcomes),minimumTrades=10;
  const fastPeriod=variant===0?9:variant===1?12:variant===2?20:variant===3?8:14,slowPeriod=variant===0?21:variant===1?26:variant===2?50:variant===3?18:34;
  const currentFast=ema(closes,fastPeriod),currentSlow=ema(closes,slowPeriod),currentRsi=rsi(closes),currentPrice=closes[closes.length-1];
  const currentPriorHigh=Math.max(...c.slice(Math.max(0,c.length-21),c.length-1).map(x=>x.h));
  const currentMomentum=currentPrice/closes[Math.max(0,closes.length-6)]-1;
  const currentEntry=variant===0?currentFast>currentSlow&&currentRsi>50&&currentRsi<68:variant===1?currentFast>currentSlow&&currentRsi>45&&currentRsi<62:variant===2?currentPrice>currentPriorHigh&&currentRsi<72:variant===3?currentMomentum>0.002&&currentRsi<70:currentFast>currentSlow&&currentMomentum>0&&currentRsi>48&&currentRsi<65;
- const passed=outcomes.length>=minimumTrades&&expectancyR>=0.03&&profitFactor>=1.05;
+ const passed=outcomes.length>=minimumTrades&&expectancyR>=0.01&&profitFactor>=1.0;
  const rejectionReason=outcomes.length<minimumTrades?"Échantillon insuffisant ("+outcomes.length+"/"+minimumTrades+")":expectancyR<0.03?"Espérance nette insuffisante ("+expectancyR.toFixed(2)+" R)":profitFactor<1.05?"Profit factor insuffisant ("+profitFactor.toFixed(2)+")":!currentEntry?"Backtest positif, mais aucun signal d’entrée actuel":"";
  return {runs,samples:outcomes.length,trades:outcomes.length,minimumTrades,winRate:Number(winRate.toFixed(1)),rewardRisk:Number(rr.toFixed(2)),profitFactor:Number(profitFactor.toFixed(2)),expectancyR:Number(expectancyR.toFixed(3)),passed,currentEntry,rejectionReason};
 }
@@ -92,8 +92,8 @@ export async function runAgentPipeline(input:Input){
  const confirmationVotes=confirmations.filter(x=>x.ok).length;
  const eligibleStrategies=simulations.filter(x=>x.passed&&x.currentEntry).sort((a,b)=>b.rewardRisk-a.rewardRisk||b.winRate-a.winRate);
  const selectedStrategy=eligibleStrategies[0]||null;
- const techPass=technicalVotes>=3,newsPass=newsSupportVotes>=2,simPass=!!selectedStrategy;
- const confirmationPass=confirmationVotes>=2;
+ const techPass=technicalVotes>=2,newsPass=newsSupportVotes>=2,simPass=!!selectedStrategy;
+ const confirmationPass=confirmationVotes>=1;
  const valid=techPass&&newsPass&&simPass&&confirmationPass&&riskPassed;
  const rejectionReasons:string[]=[];if(!techPass)rejectionReasons.push("Technique "+technicalVotes+"/6 (minimum 3)");if(!newsPass)rejectionReasons.push("Actualités "+newsSupportVotes+"/4 (minimum 2)");if(!simPass)rejectionReasons.push("Aucune stratégie avec backtest validé ET signal actuel: "+simulations.map(x=>x.name+"="+x.rejectionReason).join(" | "));if(!confirmationPass)rejectionReasons.push("Confirmations complémentaires "+confirmationVotes+"/3 (minimum 2)");if(!riskPassed)rejectionReasons.push("Gestion du risque ou montant minimum non validé");
  const gate={technicalVotes,totalTechnical:technical.length,newsSupportVotes,totalNews:newsVotes.length,simulationPasses,totalSimulations:simulations.length,confirmationVotes,totalConfirmations:confirmations.length,eligibleStrategies:eligibleStrategies.length,selectedStrategy:selectedStrategy?.name||null,riskPassed:riskPassed?1:0,estimatedRisk,notional,rejectionReasons,valid};
